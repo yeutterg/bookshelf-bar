@@ -1,14 +1,15 @@
-import KEFBarCore
+import BookshelfBarCore
 import KEFKit
 import SwiftUI
 
 struct SettingsPage: View {
     let speaker: SpeakerModel
     let back: () -> Void
+    @AppStorage(VolumeCurve.gammaKey) private var gamma: Double = 1
 
     var body: some View {
         VStack(spacing: 0) {
-            PageHeader(title: "Sound", back: back)
+            PageHeader(title: "Settings", back: back)
             PageForm {
                 Section {
                     Toggle(isOn: Binding(get: { speaker.deskMode }, set: speaker.setDeskMode)) {
@@ -25,6 +26,27 @@ struct SettingsPage: View {
                     if !speaker.profileName.isEmpty {
                         Text("EQ profile “\(speaker.profileName)”").font(.caption).foregroundStyle(.secondary)
                     }
+                }
+
+                Section {
+                    LabeledContent("Volume Curve") {
+                        HStack(spacing: 10) {
+                            Slider(value: Binding(get: { gamma }, set: { gamma = ($0 * 10).rounded() / 10 }),
+                                   in: VolumeCurve.range)
+                                .labelsHidden()
+                            Text(gamma <= 1.0 ? "Native" : String(format: "γ %.1f", gamma))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 52, alignment: .trailing)
+                        }
+                    }
+                    CurvePreview(gamma: gamma)
+                        .frame(height: 54)
+                } header: {
+                    Text("Volume")
+                } footer: {
+                    Text("Raise it if the middle of the slider gets loud too fast: the lower and middle range gets quieter and more of the change moves toward the top. Native uses the speaker's own curve. Applies to \(AppInfo.name)'s slider.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("Tone") {
@@ -49,7 +71,7 @@ struct SettingsPage: View {
                 } header: {
                     Text("USB‑C")
                 } footer: {
-                    Text("On USB‑C, KEF Bar's volume is the Mac's output volume, same as the macOS Sound control. This sets the speakers' own level underneath it.")
+                    Text("On USB‑C, BookshelfBar's volume is the Mac's output volume, same as the macOS Sound control. This sets the speakers' own level underneath it.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 }
@@ -79,6 +101,7 @@ struct SettingsPage: View {
                     PasswordSection(speaker: speaker)
                 }
 
+
             }
         }
         // Re-run once connected: the page can open before the first connection finishes.
@@ -86,6 +109,7 @@ struct SettingsPage: View {
             if speaker.connection == .connected { await speaker.refreshSettings() }
         }
     }
+
 }
 
 /// Labelled slider that writes when the drag ends (DSP writes are signed and comparatively slow).
@@ -131,5 +155,28 @@ struct PasswordSection: View {
             Text("A password was set on the speaker's web page. Sound and power changes need it.")
                 .font(.caption).foregroundStyle(.secondary)
         }
+    }
+}
+
+
+/// Small plot of slider position (x) against native level (y) for the chosen gamma.
+struct CurvePreview: View {
+    let gamma: Double
+
+    var body: some View {
+        Canvas { context, size in
+            var diagonal = Path()
+            diagonal.move(to: CGPoint(x: 0, y: size.height))
+            diagonal.addLine(to: CGPoint(x: size.width, y: 0))
+            context.stroke(diagonal, with: .color(.secondary.opacity(0.35)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            var curve = Path()
+            for i in 0...60 {
+                let x = Double(i) / 60
+                let point = CGPoint(x: x * size.width, y: (1 - VolumeCurve.native(fromSlider: x, gamma: gamma)) * size.height)
+                if i == 0 { curve.move(to: point) } else { curve.addLine(to: point) }
+            }
+            context.stroke(curve, with: .color(.accentColor), lineWidth: 2)
+        }
+        .accessibilityHidden(true)
     }
 }

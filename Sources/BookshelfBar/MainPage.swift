@@ -1,4 +1,4 @@
-import KEFBarCore
+import BookshelfBarCore
 import KEFKit
 import SwiftUI
 
@@ -10,17 +10,18 @@ struct MainPage: View {
     let openAbout: () -> Void
 
     var body: some View {
-        // Every group has its header outside the box, System Settings style.
+        // Keep the established System Settings-style structure. The artwork carries the new
+        // character and motion without redesigning the controls around it.
         PageForm {
-            Section(speaker.info?.name ?? "Speakers") {
+            Section {
                 PowerRow(speaker: speaker, smoothStart: smoothStart)
                 if speaker.connection == .connected {
                     VolumeRow(speaker: speaker, smoothStart: smoothStart)
                 }
-                SpeakerArtwork(finish: speaker.finish, dimmed: !speaker.isOn || speaker.connection != .connected,
-                               muted: speaker.isOn && speaker.muted)
+                SpeakerArtwork(finish: speaker.finish, state: speaker.visualState(smoothStart))
                     .frame(height: 140)
                     .frame(maxWidth: .infinity)
+                if let apps = speaker.rewokenBy { RewokenNotice(speaker: speaker, apps: apps) }
             }
 
             switch speaker.connection {
@@ -33,6 +34,7 @@ struct MainPage: View {
                 Section("Settings") {
                     DisclosureRow(title: "Sound", systemImage: "slider.horizontal.3", action: openSettings)
                     DisclosureRow(title: "About", systemImage: "info.circle", action: openAbout)
+                    QuitRow()
                 }
             case .unreachable:
                 if speaker.localNetworkDenied {
@@ -49,19 +51,29 @@ struct MainPage: View {
 
 // MARK: Header and artwork
 
-enum SpeakerState { case offline, standby, waking, playing, muted }
+enum SpeakerState: Equatable { case offline, reconnecting, standby, waking, on, playing, muted }
 
 extension SpeakerModel {
     @MainActor func visualState(_ smoothStart: SmoothStart) -> SpeakerState {
         guard connection == .connected else { return .offline }
+        if reconnecting { return .reconnecting }
         if smoothStart.phase != .idle { return .waking }
         if !isOn { return .standby }
-        if muted { return .muted }
-        return .playing
+        if source == .usb {
+            let macVolumeIsZero = smoothStart.macVolume.map { $0 <= 0.001 } ?? false
+            if muted || smoothStart.macMuted || macVolumeIsZero { return .muted }
+            // CoreAudio posts this transition for us. It keeps the idle path timer-free and
+            // avoids pretending that an awake speaker is necessarily playing audio.
+            return smoothStart.usbRunning ? .playing : .on
+        }
+        if muted || volume == 0 { return .muted }
+        // The KEF event API does not expose an equivalent activity signal for every network
+        // input. Stay honestly still instead of inventing playback from the power state.
+        return .on
     }
 }
 
-/// Power switch with the current status underneath, like the Wi‑Fi and Bluetooth menu extras.
+/// Power switch with the current transient status underneath, like the built-in menu extras.
 struct PowerRow: View {
     let speaker: SpeakerModel
     let smoothStart: SmoothStart
@@ -71,13 +83,11 @@ struct PowerRow: View {
             Toggle(isOn: Binding(get: { speaker.isOn }, set: { _ in speaker.togglePower() })) {
                 Label {
                     Text("Power")
-                    // Only transient states get a subtitle; on/off is the switch itself.
                     if let status {
                         HStack(spacing: 6) {
                             Text(status)
                             ProgressView().controlSize(.mini)
-                        }
-                        .lineLimit(1)
+                        }.lineLimit(1)
                     }
                 } icon: {
                     Image(systemName: "power")
@@ -95,7 +105,8 @@ struct PowerRow: View {
 
     private var status: String? {
         if speaker.reconnecting { return "Reconnecting…" }
-        if smoothStart.phase != .idle { return "Waking…" }
+        if smoothStart.phase != .idle { return "Speakers powering up" }
+        if smoothStart.safetyFailure { return "Volume held muted — check Sound settings" }
         return nil
     }
 
@@ -114,14 +125,19 @@ struct PowerRow: View {
 struct VolumeRow: View {
     let speaker: SpeakerModel
     let smoothStart: SmoothStart
+    @AppStorage(VolumeCurve.gammaKey) private var gamma: Double = 1
 
     /// On USB‑C the slider is the Mac's output volume, the same value the macOS Sound control
     /// and volume keys change. On the speaker's other inputs it's the speaker's own volume.
     private var usesMacVolume: Bool { speaker.source == .usb && smoothStart.macVolume != nil }
     private var muted: Bool { usesMacVolume ? smoothStart.macMuted : speaker.muted }
-    private var value: Double {
-        usesMacVolume ? Double(smoothStart.macVolume ?? 0) * 100 : Double(speaker.volume)
+    private var g: Double { min(max(gamma, VolumeCurve.range.lowerBound), VolumeCurve.range.upperBound) }
+
+    /// Native value (0…1): macOS scalar on USB‑C, speaker volume / 100 otherwise.
+    private var native: Double {
+        usesMacVolume ? Double(smoothStart.macVolume ?? 0) : Double(speaker.volume) / 100
     }
+    private var value: Double { VolumeCurve.slider(fromNative: native, gamma: g) * 100 }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -142,7 +158,8 @@ struct VolumeRow: View {
     }
 
     private func set(_ v: Double) {
-        if usesMacVolume { smoothStart.setMacVolume(Float(v / 100)) } else { speaker.setVolume(Int(v.rounded())) }
+        let n = VolumeCurve.native(fromSlider: v / 100, gamma: g)
+        if usesMacVolume { smoothStart.setMacVolume(Float(n)) } else { speaker.setVolume(Int((n * 100).rounded())) }
     }
 
     private func toggleMute() {
@@ -152,8 +169,7 @@ struct VolumeRow: View {
 
 // MARK: Input
 
-/// One row per physical input with a checkmark on the active one, like the output list in the
-/// Sound menu extra.
+/// One row per physical input with a checkmark on the active one, like the Sound menu extra.
 struct InputRows: View {
     let speaker: SpeakerModel
 
@@ -204,6 +220,7 @@ extension PhysicalSource {
         case .analog, .coaxial, .standby, .powerOn: "icon-aux"
         }
     }
+
 }
 
 // MARK: Smooth Start
@@ -225,8 +242,8 @@ struct SmoothStartRow: View {
 
     private var subtitle: String {
         switch smoothStart.phase {
-        case .waking: return "Holding volume low while waking…"
-        case .settling: return "Easing volume up…"
+        case .waking: return "Speakers powering up"
+        case .settling: return "Ramping volume up…"
         case .idle: return "Ramps volume up while waking"
         }
     }
@@ -248,37 +265,6 @@ struct KeepAwakeRow: View {
     }
 }
 
-// MARK: Local Network permission
-
-struct LocalNetworkSection: View {
-    let speaker: SpeakerModel
-
-    var body: some View {
-        Section {
-            Label {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Local Network Access Is Off")
-                    Text("macOS is blocking KEF Bar from your network. Turn on KEF Bar in Privacy & Security › Local Network; it reconnects by itself.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            } icon: {
-                Image(systemName: "network").foregroundStyle(.orange)
-            }
-            HStack {
-                Button("Open Privacy Settings") {
-                    NSWorkspace.shared.open(SpeakerModel.localNetworkSettingsURL)
-                }
-                .buttonStyle(.borderedProminent)
-                Spacer()
-                Button("Try Again", action: speaker.retry)
-            }
-        }
-        Section { DisclosureGroup("Enter IP Address") { ManualConnectRows(speaker: speaker) } }
-    }
-}
-
 // MARK: Manual connect
 
 struct ManualConnectRows: View {
@@ -297,5 +283,50 @@ struct ManualConnectRows: View {
 
     private func connect() {
         Task { await speaker.connect(host: host, remember: true) }
+    }
+}
+
+
+/// Shown when the speakers woke straight back up after being turned off, because an app holds
+/// an audio stream open to them.
+struct RewokenNotice: View {
+    let speaker: SpeakerModel
+    let apps: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Kept awake by \(apps.formatted(.list(type: .and)))")
+                    Text("It's holding audio open to the speakers. Turning off anyway removes them from the Sound menu until you turn them back on.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } icon: {
+                Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
+            }
+            HStack {
+                Spacer()
+                Button("Turn Off Anyway") { speaker.turnOff(force: true) }
+            }
+        }
+    }
+}
+
+
+/// Quit as the last row of the main page's Settings group.
+struct QuitRow: View {
+    var body: some View {
+        Button { NSApp.terminate(nil) } label: {
+            HStack {
+                Label("Quit \(AppInfo.name)", systemImage: "power")
+                Spacer()
+                Text("⌘Q").foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut("q")
     }
 }

@@ -1,6 +1,6 @@
 """Shape-faithful cartoon studies built from the official KEF cabinet mesh.
 
-Usage: blender --background --python render_variants.py -- satin pair output.png [model.glb] [graphite|olive]
+Usage: blender --background --python render_variants.py -- satin pair output.png [model.glb] [finish]
 Treatments: satin, clay, illustrated. Layouts: pair, angle.
 Cabinet mesh is preserved; only driver, finish, LED and wordmark are simplified.
 """
@@ -15,8 +15,22 @@ args=sys.argv[sys.argv.index('--')+1:]
 style,layout,output=args[:3]
 model=args[3] if len(args)>3 else '/tmp/kef-models/lsx2lt-graphite.glb'
 finish=args[4] if len(args)>4 else 'graphite'
+FINISH_PALETTES={
+    # Cabinet, baffle, surround, cone, center, fins, unused wordmark.
+    # Color interpretations from KEF official product imagery; not calibrated color specifications.
+    'lt-stone-white':['D9D5CE','E7E3DC','292C2D','B7B5AC','73756F','343A36','85837F'],
+    'lt-sage-green':['3F5C4D','486655','242B28','2E4840','1C3029','101E19','23372D'],
+    'lsxii-carbon-black':['2E3438','3A4045','252729','505254','AF9266','66502B','3A4144'],
+    'lsxii-mineral-white':['E5E3E2','F0ECE8','282B2C','A3A7A8','B69B72','70552F','888888'],
+    'lsxii-cobalt-blue':['283C70','37518D','252B31','C4A57D','AE8B56','6D4E27','233761'],
+    'lsxii-lava-red':['A5252A','B83236','272B2D','AD3437','722125','3E1116','702024'],
+    'lsxii-olive-green':['80926D','8B9C76','353B3C','D9B797','EBCBA4','AF7C55','43533A'],
+    'lsxii-soundwave':['A19082','B6A595','2B2E30','C2AE9B','1739A4','0B2168','76685E'],
+    'lsxii-cotton-white':['DCDAD6','ECE8E3','282B2D','A3A7A8','B69B72','70552F','88847F'],
+    'lsxii-amber-haze':['C99038','E4AB47','292C2E','C9AA7F','AE8650','6C4C23','9B6F2B'],
+}
 assert style in {'satin','clay','illustrated'} and layout in {'pair','angle'}
-assert finish in {'graphite','olive'}
+assert finish in {'graphite','olive'} or finish in FINISH_PALETTES
 bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete(use_global=False)
 bpy.ops.import_scene.gltf(filepath=model)
 source=next(o for o in bpy.context.scene.objects if o.type=='MESH')
@@ -65,6 +79,17 @@ def material(name,hexcolor):
             e.position=pos;e.color=(*(v*scale for v in color),1)
         nt.links.new(dot.outputs['Value'],ramp.inputs[0])
         emit=nt.nodes.new('ShaderNodeEmission');nt.links.new(ramp.outputs[0],emit.inputs[0]);nt.links.new(emit.outputs[0],nt.nodes.get('Material Output').inputs[0])
+        if finish=='lsxii-soundwave' and name=='Cabinet':
+            # Restrained broad woven-wave cue on the shell; no fabric microtexture.
+            uv=nt.nodes.new('ShaderNodeTexCoord');xyz=nt.nodes.new('ShaderNodeSeparateXYZ');nt.links.new(uv.outputs['Generated'],xyz.inputs[0])
+            ym=nt.nodes.new('ShaderNodeMath');ym.operation='MULTIPLY';ym.inputs[1].default_value=65;nt.links.new(xyz.outputs['Y'],ym.inputs[0])
+            zm=nt.nodes.new('ShaderNodeMath');zm.operation='MULTIPLY';zm.inputs[1].default_value=6;nt.links.new(xyz.outputs['Z'],zm.inputs[0])
+            zs=nt.nodes.new('ShaderNodeMath');zs.operation='SINE';nt.links.new(zm.outputs[0],zs.inputs[0])
+            add=nt.nodes.new('ShaderNodeMath');add.operation='ADD';nt.links.new(ym.outputs[0],add.inputs[0]);nt.links.new(zs.outputs[0],add.inputs[1])
+            wave=nt.nodes.new('ShaderNodeMath');wave.operation='SINE';nt.links.new(add.outputs[0],wave.inputs[0])
+            band=nt.nodes.new('ShaderNodeMapRange');band.inputs['From Min'].default_value=.75;band.inputs['From Max'].default_value=.98;band.inputs['To Min'].default_value=1;band.inputs['To Max'].default_value=.88;nt.links.new(wave.outputs[0],band.inputs[0])
+            mix=nt.nodes.new('ShaderNodeMixRGB');mix.blend_type='MULTIPLY';mix.inputs[0].default_value=1
+            nt.links.new(ramp.outputs[0],mix.inputs[1]);nt.links.new(band.outputs[0],mix.inputs[2]);nt.links.new(mix.outputs[0],emit.inputs[0])
     else:
         bs.inputs['Base Color'].default_value=(*color,1)
         bs.inputs['Roughness'].default_value=.43 if style=='satin' else .95
@@ -76,12 +101,14 @@ def material(name,hexcolor):
 palettes={
     'satin':['58616B','626E78','313940','7A8791','B6C2C9','56636F','34414D'],
     'clay':['71777B','7B8388','414649','929A9C','C4CAC9','737D80','4C5659'],
-    'illustrated':['41474B','4C545A','252729','505254','707274','3D4043','3A515E'],
+    'illustrated':['484E52','545C62','252729','505254','2D3032','1C1F21','3A515E'],
 }
 palette=palettes[style]
 if style=='illustrated' and finish=='olive':
     # Preserve the previously approved olive/copper material colors.
     palette=['80926D','8B9C76','353B3C','D9B797','EBCBA4','AF7C55','43533A']
+elif style=='illustrated' and finish in FINISH_PALETTES:
+    palette=FINISH_PALETTES[finish]
 body,baffle,surround,cone,center,petal,logo=[material(n,c) for n,c in zip(['Cabinet','Baffle','Surround','Cone','Center','Petal','Wordmark'],palette)]
 led=material('LED','C4D2D0')
 

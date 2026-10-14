@@ -1,19 +1,19 @@
 #!/bin/zsh
-# Builds KEFBar.app from the Swift package. usage: scripts/bundle.sh [debug|release]
+# Builds BookshelfBar.app from the Swift package. usage: scripts/bundle.sh [debug|release]
 set -euo pipefail
 cd "${0:A:h}/.."
 CONFIG=${1:-release}
 VERSION=${VERSION:-0.1.0}
 
-swift build -c "$CONFIG" --product KEFBar
+swift build -c "$CONFIG" --product BookshelfBar
 BIN=$(swift build -c "$CONFIG" --show-bin-path)
 
-APP=build/KEFBar.app
+APP=build/BookshelfBar.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN/KEFBar" "$APP/Contents/MacOS/KEFBar"
+cp "$BIN/BookshelfBar" "$APP/Contents/MacOS/BookshelfBar"
 # SwiftPM resource bundle (speaker artwork); Bundle.module finds it in Contents/Resources.
-cp -R "$BIN/KEFBar_KEFBar.bundle" "$APP/Contents/Resources/"
+cp -R "$BIN/BookshelfBar_BookshelfBar.bundle" "$APP/Contents/Resources/"
 sed "s/__VERSION__/$VERSION/" Resources/Info.plist > "$APP/Contents/Info.plist"
 
 # Sign with an Apple Development identity when available, so macOS treats rebuilds as the same

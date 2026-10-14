@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import KEFAudio
 import KEFKit
@@ -14,6 +15,7 @@ import KEFKit
 //   kefctl set <path> <type> <val>  raw write, e.g. set settings:/kef/host/maximumVolume i32_ 100
 //   kefctl events                   stream live changes
 //   kefctl usb                      KEF USB audio device state on this Mac
+//   kefctl firmware [check]         firmware update status (and ask the speaker to check)
 //   kefctl sign-test                re-write maximumVolume with its current value via a signed request
 //
 // Target speaker: --host <ip|name>, or $KEF_HOST, or the first one found via Bonjour.
@@ -161,7 +163,14 @@ do {
         running: \(AudioHardware.isRunningSomewhere(id))
         volume:  \(AudioHardware.volume(id).map { String(format: "%.3f", $0) } ?? "-") (\(db))
         muted:   \(AudioHardware.isMuted(id).map(String.init) ?? "-")
+        playing: \(AudioHardware.processesPlaying(to: id).map { pid in
+            NSRunningApplication(processIdentifier: pid)?.localizedName ?? "pid \(pid)" }.joined(separator: ", "))
         """)
+
+    case "firmware":
+        let c = await client()
+        if rest.first == "check" { try await c.checkForFirmwareUpdate(); try await Task.sleep(for: .seconds(4)) }
+        print(String(decoding: try JSONEncoder().encode(try await c.get("firmwareupdate:updateStatus").payload), as: UTF8.self))
 
     case "sign-test":
         let c = KEFClient(host: (await client()).host, password: password, signing: .always)

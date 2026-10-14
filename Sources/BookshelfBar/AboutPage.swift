@@ -1,10 +1,10 @@
 import AppKit
-import KEFBarCore
-import KEFKit
+import BookshelfBarCore
 import SwiftUI
 
 struct AboutPage: View {
     let speaker: SpeakerModel
+    let firmware: FirmwareUpdater
     let back: () -> Void
     let changeSpeakers: () -> Void
 
@@ -14,11 +14,12 @@ struct AboutPage: View {
             PageForm {
                 Section {
                     ForEach(rows, id: \.0) { CopyableRow(title: $0.0, value: $0.1) }
-                } footer: {
-                    Text("Click a value to copy it.").font(.caption).foregroundStyle(.secondary)
                 }
+                Section { FirmwareUpdateRow(updater: firmware) }
                 Section {
                     DisclosureRow(title: "Change Speakers…", systemImage: "arrow.left.arrow.right", action: changeSpeakers)
+                } footer: {
+                    Text("BookshelfBar \(Bundle.main.appVersion) · Not affiliated with KEF.").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -28,12 +29,13 @@ struct AboutPage: View {
         guard let info = speaker.info else { return [("IP Address", speaker.host ?? "—")] }
         var rows = [("Name", info.name), ("Model", info.modelName), ("Primary Serial", info.serialNumber)]
         if !info.serialNumberSecondary.isEmpty { rows.append(("Secondary Serial", info.serialNumberSecondary)) }
-        rows.append(("Firmware", info.firmware.components(separatedBy: ".0x").first ?? info.firmware))
+        rows.append(("Firmware", firmware.currentVersion ?? (info.firmware.components(separatedBy: ".0x").first ?? info.firmware)))
         if let host = speaker.host { rows.append(("IP Address", host)) }
         if !info.mac.isEmpty { rows.append(("MAC Address", info.mac)) }
         return rows
     }
 }
+
 
 /// `LabeledContent` row whose value can be copied: a copy button appears on hover, clicking the
 /// row copies, and there's a Copy item in the context menu.

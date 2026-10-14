@@ -7,6 +7,7 @@ public enum KEFError: Error, LocalizedError, Equatable {
     case unauthorized
     case localNetworkDenied
     case timedOut(String)
+    case invalidHost(String)
     /// The host answered but it's a different speaker (e.g. its IP was reassigned).
     case wrongSpeaker
 
@@ -16,8 +17,9 @@ public enum KEFError: Error, LocalizedError, Equatable {
         case .speaker(let n, let m): "\(n): \(m)"
         case .unexpectedResponse(let s): "Unexpected response: \(s.prefix(200))"
         case .unauthorized: "The speaker rejected the request signature. Check the speaker password."
-        case .localNetworkDenied: "KEF Bar isn't allowed to access your local network."
+        case .localNetworkDenied: "BookshelfBar isn't allowed to access your local network."
         case .timedOut(let what): "Timed out reaching \(what)."
+        case .invalidHost(let host): "Invalid speaker address: \(host)"
         case .wrongSpeaker: "A different speaker answered at that address."
         }
     }
@@ -42,7 +44,7 @@ public final class KEFClient: Sendable {
     let session: URLSession
     let signing: Signing
 
-    public enum Signing: Sendable {
+    public enum Signing: Sendable, Equatable {
         /// Sign writes only when the speaker reports `authMode != none` (checked once, cached).
         case automatic
         case always
@@ -52,7 +54,7 @@ public final class KEFClient: Sendable {
     private let authModeCache = Cache<String>()
 
     public init(host: String, password: String = "", signing: Signing = .automatic, timeout: TimeInterval = 5) {
-        self.host = host
+        self.host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         self.password = password
         self.signing = signing
         let config = URLSessionConfiguration.ephemeral
@@ -63,12 +65,34 @@ public final class KEFClient: Sendable {
         session = URLSession(configuration: config)
     }
 
-    var base: URL { URL(string: "http://\(host)")! }
+    init(host: String, password: String = "", signing: Signing = .automatic, session: URLSession) {
+        self.host = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.password = password
+        self.signing = signing
+        self.session = session
+    }
+
+    public static func normalizedHost(_ raw: String) -> String? {
+        let host = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty, !host.contains("/"), !host.contains("@"),
+              let components = URLComponents(string: "http://\(host)"),
+              components.host != nil, components.query == nil, components.fragment == nil
+        else { return nil }
+        return host
+    }
+
+    func endpoint(_ path: String) throws -> URL {
+        guard let host = Self.normalizedHost(host),
+              let base = URL(string: "http://\(host)"),
+              let url = URL(string: path, relativeTo: base)?.absoluteURL
+        else { throw KEFError.invalidHost(self.host) }
+        return url
+    }
 
     // MARK: Primitives
 
     public func get(_ path: KEFPath) async throws -> KEFValue {
-        let data = try await send(getDataRequest(path))
+        let data = try await send(try getDataRequest(path))
         guard let first = try decodeArray(data).first else {
             throw KEFError.unexpectedResponse(String(decoding: data, as: UTF8.self))
         }
@@ -76,7 +100,7 @@ public final class KEFClient: Sendable {
     }
 
     public func rows(_ path: KEFPath, from: Int = 0, to: Int = 300) async throws -> [KEFRow] {
-        var c = URLComponents(url: base.appending(path: "api/getRows"), resolvingAgainstBaseURL: false)!
+        var c = URLComponents(url: try endpoint("api/getRows"), resolvingAgainstBaseURL: false)!
         c.queryItems = [.init(name: "path", value: path.rawValue), .init(name: "roles", value: "@all"),
                         .init(name: "from", value: "\(from)"), .init(name: "to", value: "\(to)")]
         let data = try await send(URLRequest(url: c.url!))
@@ -91,25 +115,36 @@ public final class KEFClient: Sendable {
     }
 
     public func set(_ path: KEFPath, _ value: KEFValue) async throws {
-        let url = base.appending(path: "api/setData")
-        let request: URLRequest
-        if try await shouldSign() {
-            request = try KEFSigner.signedWrite(url: url, path: path, value: value, password: password)
+        let url = try endpoint("api/setData")
+        let signed = try await shouldSign()
+        let request = try makeWrite(url: url, path: path, value: value, signed: signed)
+        do {
+            _ = try await send(request)
+        } catch KEFError.unauthorized where signing == .automatic && !signed {
+            // Auth can be enabled after this client was created. Re-read the mode and retry once.
+            authModeCache.value = nil
+            guard try await shouldSign() else { throw KEFError.unauthorized }
+            _ = try await send(try makeWrite(url: url, path: path, value: value, signed: true))
+        }
+    }
+
+    private func makeWrite(url: URL, path: KEFPath, value: KEFValue, signed: Bool) throws -> URLRequest {
+        if signed {
+            return try KEFSigner.signedWrite(url: url, path: path, value: value, password: password)
         } else {
             var r = URLRequest(url: url)
             r.httpMethod = "POST"
             r.setValue("application/json", forHTTPHeaderField: "Content-Type")
             r.httpBody = try KEFSigner.encoder.encode(UnsignedBody(path: path.rawValue, role: "value", value: value))
-            request = r
+            return r
         }
-        _ = try await send(request)
     }
 
     // MARK: Events
 
     /// Creates an event queue for `paths` and returns its id.
     public func subscribe(_ paths: [KEFPath]) async throws -> String {
-        var r = URLRequest(url: base.appending(path: "api/event/modifyQueue"))
+        var r = URLRequest(url: try endpoint("api/event/modifyQueue"))
         r.httpMethod = "POST"
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: JSONValue = .object([
@@ -126,7 +161,7 @@ public final class KEFClient: Sendable {
 
     /// Long-polls the queue. Returns an empty array if nothing changed within `timeout`.
     public func poll(queue: String, timeout: Int = 20) async throws -> [KEFEvent] {
-        var c = URLComponents(url: base.appending(path: "api/event/pollQueue"), resolvingAgainstBaseURL: false)!
+        var c = URLComponents(url: try endpoint("api/event/pollQueue"), resolvingAgainstBaseURL: false)!
         c.queryItems = [.init(name: "queueId", value: queue), .init(name: "timeout", value: "\(timeout)")]
         var r = URLRequest(url: c.url!)
         r.timeoutInterval = TimeInterval(timeout + 5)
@@ -143,8 +178,8 @@ public final class KEFClient: Sendable {
 
     // MARK: Transport
 
-    func getDataRequest(_ path: KEFPath) -> URLRequest {
-        var c = URLComponents(url: base.appending(path: "api/getData"), resolvingAgainstBaseURL: false)!
+    func getDataRequest(_ path: KEFPath) throws -> URLRequest {
+        var c = URLComponents(url: try endpoint("api/getData"), resolvingAgainstBaseURL: false)!
         c.queryItems = [.init(name: "path", value: path.rawValue), .init(name: "roles", value: "value")]
         return URLRequest(url: c.url!)
     }
@@ -173,7 +208,7 @@ public final class KEFClient: Sendable {
         case .never: return false
         case .automatic:
             if let mode = authModeCache.value { return mode != "none" }
-            let mode = (try? await get(.authMode).string) ?? "none"
+            let mode = try await get(.authMode).string ?? "none"
             authModeCache.value = mode
             return mode != "none"
         }

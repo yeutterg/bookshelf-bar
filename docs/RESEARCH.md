@@ -1,6 +1,6 @@
-# KEF Bar: research notes
+# BookshelfBar: research notes
 
-Research, measurements and design decisions behind KEF Bar. Device identifiers are redacted.
+Research, measurements and design decisions behind BookshelfBar. Device identifiers are redacted.
 
 ## 1. What we learned (live probes of your speakers on 2026-10-14 + web research)
 
@@ -337,7 +337,7 @@ Shortcuts/AppIntents ("Switch KEF to TV"), CLI (`kef vol 30`).
 - **Wake On is only checked at standby entry.** Setting `wakeUpSource = wakeup_default`, entering
   standby, then restoring `usb` keeps the speaker asleep even with the stream still held.
 - **Side effect:** entering standby with USB wake off powers down the speaker's USB interface
-  (the CoreAudio device disappears) until the next wake, so Mac audio can't wake it. KEF Bar
+  (the CoreAudio device disappears) until the next wake, so Mac audio can't wake it. BookshelfBar
   therefore uses this only when a stream is held, where plain standby wouldn't stick at all.
 - With Wake On = USB Audio and no held stream, the USB device stays present through light and
   deep (`networkStandby`) standby, so playing audio wakes the speaker as before.

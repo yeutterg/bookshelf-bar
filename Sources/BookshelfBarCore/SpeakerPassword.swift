@@ -3,9 +3,15 @@ import Security
 
 /// The speaker's web-page password (only needed if one was set), stored in the login Keychain.
 enum SpeakerPassword {
-    static let service = "KEFBar speaker password"
+    static let service = "BookshelfBar speaker password"
+    /// Name used before the app was renamed from KEF Bar; read as a fallback.
+    static let legacyService = "KEFBar speaker password"
 
     static func load(for kefId: String?) -> String? {
+        load(for: kefId, service: service) ?? load(for: kefId, service: legacyService)
+    }
+
+    private static func load(for kefId: String?, service: String) -> String? {
         guard let kefId else { return nil }
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                     kSecAttrAccount as String: kefId, kSecReturnData as String: true]

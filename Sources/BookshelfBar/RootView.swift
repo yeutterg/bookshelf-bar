@@ -1,21 +1,23 @@
-import KEFBarCore
+import BookshelfBarCore
 import KEFKit
 import SwiftUI
 
-enum Page: String { case main, sound, about, setup }
+enum Page: String { case main, settings, about, setup }
 
-/// The menu bar window. Each page is a grouped `Form`, the same structure System Settings and
-/// the built-in menu extras use; pages swap with a native push transition.
+/// The menu bar window. Each page keeps the native grouped-form structure and push transition.
 struct RootView: View {
     let speaker: SpeakerModel
     let smoothStart: SmoothStart
     let keepAwake: KeepAwake
+    let firmware: FirmwareUpdater
     @State var page: Page = .main
 
     var body: some View {
         VStack(spacing: 0) {
             Group {
-                if speaker.needsSetup || page == .setup {
+                if speaker.isUpdatingFirmware {
+                    FirmwareLockPage(updater: firmware)
+                } else if speaker.needsSetup || page == .setup {
                     SetupPage(speaker: speaker, smoothStart: smoothStart)
                 } else {
                     pageView
@@ -23,7 +25,8 @@ struct RootView: View {
             }
             .animation(.smooth(duration: 0.3), value: page)
             .animation(.smooth(duration: 0.3), value: speaker.needsSetup)
-            QuitFooter()
+            // On the main page Quit is a row under Settings; elsewhere it's a small footer.
+            if page != .main || speaker.needsSetup || speaker.isUpdatingFirmware { QuitFooter() }
         }
         .frame(width: 320)
         .onAppear { speaker.popoverVisible = true }
@@ -37,13 +40,13 @@ struct RootView: View {
         switch page {
             case .main:
                 MainPage(speaker: speaker, smoothStart: smoothStart, keepAwake: keepAwake,
-                         openSettings: { page = .sound }, openAbout: { page = .about })
+                         openSettings: { page = .settings }, openAbout: { page = .about })
                     .transition(.push(from: .leading))
-            case .sound:
+            case .settings:
                 SettingsPage(speaker: speaker, back: { page = .main })
                     .transition(.push(from: .trailing))
             case .about:
-                AboutPage(speaker: speaker, back: { page = .main }, changeSpeakers: {
+                AboutPage(speaker: speaker, firmware: firmware, back: { page = .main }, changeSpeakers: {
                     page = .main
                     speaker.forget()
                 })
@@ -58,9 +61,8 @@ struct RootView: View {
 struct QuitFooter: View {
     var body: some View {
         HStack {
-            Text("KEF Bar \(Bundle.main.appVersion)").font(.caption).foregroundStyle(.tertiary)
             Spacer()
-            Button("Quit KEF Bar") { NSApp.terminate(nil) }
+            Button("Quit BookshelfBar") { NSApp.terminate(nil) }
                 .buttonStyle(.borderless)
                 .keyboardShortcut("q")
         }

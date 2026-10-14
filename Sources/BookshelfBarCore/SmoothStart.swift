@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import CoreAudio
 import Foundation
 import KEFAudio
@@ -6,7 +7,7 @@ import KEFKit
 import Observation
 import os
 
-private let slog = Logger(subsystem: "com.github.yeutterg.kefbar", category: "smoothstart")
+private let slog = Logger(subsystem: "com.github.yeutterg.bookshelfbar", category: "smoothstart")
 
 /// Prevents the loud start when a sleeping KEF begins playing over USB.
 ///
@@ -26,9 +27,15 @@ private let slog = Logger(subsystem: "com.github.yeutterg.kefbar", category: "sm
 public final class SmoothStart {
     public enum Phase: Equatable { case idle, waking, settling }
 
-    public var enabled: Bool { didSet { defaults.set(enabled, forKey: "smoothStart") } }
+    public var enabled: Bool {
+        didSet {
+            defaults.set(enabled, forKey: "smoothStart")
+            if !enabled { disableRunningGuard() }
+        }
+    }
     public var wakeOnUnlock: Bool { didSet { defaults.set(wakeOnUnlock, forKey: "wakeOnUnlock") } }
     public private(set) var phase: Phase = .idle
+    public private(set) var safetyFailure = false
     /// True while the KEF USB device is connected to this Mac.
     public private(set) var usbPresent = false
     /// Product name of the connected KEF USB device (e.g. "LSX II LT"), used to point out the
@@ -44,6 +51,9 @@ public final class SmoothStart {
     private var restoreDefault = false
     private var ignoreVolumeUntil = Date.distantPast
     private var guardTask: Task<Void, Never>?
+    /// Invalidates callbacks from a cancelled guard so an old USB device cannot finish a
+    /// newer wake cycle after re-enumeration.
+    private var guardGeneration = 0
     private var observers: [NSObjectProtocol] = []
 
     /// Last USB volume the user chose (0…1), restored after every re-arrival.
@@ -61,14 +71,9 @@ public final class SmoothStart {
     public func start() {
         usb.onEvent = { [weak self] in self?.handle($0) }
         usb.start()
-        usbPresent = usb.device != nil
-        usbRunning = usb.isRunning
-        speaker.usbStreamActive = usbRunning
-        kefWasDefault = usb.isDefaultOutput
-        liveVolume = usb.volume
-        if rememberedVolume == nil { rememberedVolume = usb.volume }
         observeSystem()
         speaker.willChangePower = { [weak self] on in self?.prepareForPower(on: on) }
+        speaker.streamHolders = { [weak self] in self?.streamHolderNames() ?? [] }
     }
 
     // MARK: Mac-side volume (what the macOS Sound control shows)
@@ -79,20 +84,28 @@ public final class SmoothStart {
         guard usbPresent else { return nil }
         return phase == .idle ? (liveVolume ?? rememberedVolume) : rememberedVolume
     }
-    public var macMuted: Bool { usb.device.flatMap(AudioHardware.isMuted) ?? false }
+    public var macMuted: Bool { phase == .idle ? liveMuted : (intent?.snapshot.muted ?? liveMuted) }
     private var liveVolume: Float?
+    private var liveMuted = false
+    private var intent: VolumeIntent?
 
     public func setMacVolume(_ v: Float) {
         rememberedVolume = v
         liveVolume = v
+        intent?.setTarget(v)
         guard phase == .idle, !armedLow, let id = usb.device else { return }
-        AudioHardware.setVolume(id, v)
+        volumeGuard.setLevel(id, v)
     }
 
     public func toggleMacMute() {
         guard let id = usb.device else { return }
-        AudioHardware.setMuted(id, !(AudioHardware.isMuted(id) ?? false))
-        liveVolume = AudioHardware.volume(id)
+        let newValue = !macMuted
+        liveMuted = newValue
+        intent?.setMuted(newValue)
+        // Muting is always safe immediately. Unmuting during a guard waits until the verified
+        // hold stage; the guard observes the updated intent itself.
+        if newValue { volumeGuard.setMuted(id, true) }
+        else if phase == .idle { volumeGuard.setMuted(id, false) }
     }
 
     // MARK: Events
@@ -106,10 +119,28 @@ public final class SmoothStart {
     private var armedLow = false
 
     private func handle(_ event: KEFUSBMonitor.Event) {
+        // During a firmware update the USB interface itself may be reflashed: no volume writes,
+        // no wake requests, no default-output changes.
+        if speaker.isUpdatingFirmware {
+            if case .removed = event { usbPresent = false; usbRunning = false }
+            if case .arrived = event { usbPresent = true }
+            return
+        }
         // No CoreAudio reads here: they can block on a device that's coming or going.
         slog.info("event \(String(describing: event), privacy: .public) phase=\(String(describing: self.phase), privacy: .public) on=\(self.speaker.isOn) armed=\(self.armedLow)")
         switch event {
+        case .initialState(let device, _, let isDefault, let running, let volume, let muted):
+            usbPresent = device != nil
+            usbRunning = running
+            speaker.usbStreamActive = running
+            kefWasDefault = isDefault
+            liveVolume = volume
+            liveMuted = muted
+            if rememberedVolume == nil { rememberedVolume = volume }
+
         case .removed:
+            guardGeneration += 1
+            volumeGuard.cancel()
             usbPresent = false
             usbRunning = false
             speaker.usbStreamActive = false
@@ -125,7 +156,12 @@ public final class SmoothStart {
 
         case .arrived(let id):
             usbPresent = true
-            if enabled { guardArrival(id) } else { phase = .idle }
+            if enabled {
+                guardArrival(id)
+            } else {
+                if armedLow { volumeGuard.setState(id, target: target, muted: liveMuted) }
+                finish()
+            }
 
         case .defaultOutputChanged(let isKEF):
             // Ignore the fallback macOS does while the KEF is gone; we restore it on arrival.
@@ -146,18 +182,31 @@ public final class SmoothStart {
                 rememberedVolume = v
                 liveVolume = v
             }
+
+        case .muteChanged(let muted):
+            // During the guard this notification is usually an echo of our own protective mute.
+            // Treating it as user intent would leave an originally-unmuted speaker muted. App
+            // button changes update `intent` directly; resume observing hardware when idle.
+            if phase == .idle { liveMuted = muted }
         }
     }
 
     private var target: Float { rememberedVolume ?? 0.5 }
     private var holdLevel: Float { max(target - holdDrop, 0) }
 
-    /// Called just before the speaker's power changes (KEF Bar's switch, a pre-wake, audio
+    /// Called just before the speaker's power changes (BookshelfBar's switch, a pre-wake, audio
     /// starting on a sleeping speaker). Sets the KEF to the hold level *before* it drops off
     /// USB: macOS restores the last level it saw when the device comes back, so it returns low
     /// instead of at full volume.
     func prepareForPower(on: Bool) {
+        guard !speaker.isUpdatingFirmware else { return }
         guard enabled else { return }
+        if !on {
+            guardGeneration += 1
+            guardTask?.cancel()
+            volumeGuard.cancel()
+            phase = .idle
+        }
         if let id = usb.device {
             slog.info("pre-arm hold \(self.holdLevel) (turning \(on ? "on" : "off", privacy: .public))")
             armedLow = true
@@ -192,33 +241,51 @@ public final class SmoothStart {
     }
 
     private func runGuard(_ id: AudioObjectID) {
+        guardGeneration += 1
+        let generation = guardGeneration
         phase = .settling
+        safetyFailure = false
         ignoreVolumeUntil = .distantFuture
-        let plan = VolumeGuard.Plan(hold: holdLevel, target: target)
-        slog.info("guard id=\(id) hold=\(plan.hold) target=\(plan.target)")
-        volumeGuard.run(id, plan, log: { slog.info("\($0, privacy: .public)") }) { [weak self] completed in
-            guard completed else { return }
+        let intent = VolumeIntent(target: target, muted: liveMuted)
+        self.intent = intent
+        let plan = VolumeGuard.Plan(hold: holdLevel)
+        slog.info("guard id=\(id) hold=\(plan.hold) target=\(self.target)")
+        volumeGuard.run(id, plan, intent: intent, log: { slog.info("\($0, privacy: .public)") }) { [weak self] completed in
             Task { @MainActor in
-                self?.liveVolume = plan.target
-                self?.finish()
+                guard let self, self.guardGeneration == generation else { return }
+                self.liveVolume = intent.snapshot.target
+                self.liveMuted = completed ? intent.snapshot.muted : true
+                self.safetyFailure = !completed
+                self.finish()
             }
         }
     }
 
     private func finish() {
         armedLow = false
+        intent = nil
         ignoreVolumeUntil = .now + 0.5
         phase = .idle
         usbRunning = usb.isRunning
         speaker.usbStreamActive = usbRunning
     }
 
+    private func disableRunningGuard() {
+        guardGeneration += 1
+        guardTask?.cancel()
+        volumeGuard.cancel()
+        if let id = usb.device, armedLow || phase != .idle {
+            volumeGuard.setState(id, target: target, muted: liveMuted)
+        }
+        finish()
+    }
+
     /// On quit, don't leave the KEF parked at the hold level.
     public func prepareForQuit() {
+        guardGeneration += 1
         volumeGuard.cancel()
         if armedLow || phase != .idle, let id = usb.device, let v = rememberedVolume {
-            AudioHardware.setVolume(id, v)
-            AudioHardware.setMuted(id, false)
+            volumeGuard.setState(id, target: v, muted: liveMuted)
         }
     }
 
@@ -240,5 +307,20 @@ public final class SmoothStart {
     private func preWakeForUser() {
         guard enabled, wakeOnUnlock, usb.isDefaultOutput, !speaker.isOn else { return }
         prepareForPower(on: true)
+    }
+
+    /// Friendly names of the processes holding an audio stream open to the KEF.
+    func streamHolderNames() -> [String] {
+        guard let id = usb.device else { return [] }
+        return AudioHardware.processesPlaying(to: id).map { pid in
+            if let name = NSRunningApplication(processIdentifier: pid)?.localizedName { return name }
+            var buffer = [CChar](repeating: 0, count: 4096)
+            let path = proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0
+                ? String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+                : ""
+            if path.contains("CoreSimulator") { return "iOS Simulator" }
+            return URL(fileURLWithPath: path).lastPathComponent.isEmpty ? "pid \(pid)" : URL(fileURLWithPath: path).lastPathComponent
+        }
+        .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
     }
 }

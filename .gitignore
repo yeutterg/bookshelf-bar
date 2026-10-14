@@ -6,3 +6,6 @@ xcuserdata/
 .DS_Store
 # Local working notes with unredacted device identifiers; docs/RESEARCH.md is the public copy.
 PLAN.md
+
+# Exploratory render output (regenerate with the scripts in prototype-assets/)
+prototype-assets/**/*.png

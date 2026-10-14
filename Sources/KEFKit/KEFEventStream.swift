@@ -12,15 +12,17 @@ public extension KEFClient {
                 while !Task.isCancelled {
                     do {
                         let queue = try await subscribe(paths)
-                        backoff = 1
                         while !Task.isCancelled {
                             for event in try await poll(queue: queue, timeout: pollTimeout) {
                                 continuation.yield(event)
                             }
+                            // A complete long-poll proves the connection stayed healthy.
+                            backoff = 1
                         }
                     } catch is CancellationError {
                         break
                     } catch {
+                        if Task.isCancelled || (error as? URLError)?.code == .cancelled { break }
                         onFailure?(error)
                         try? await Task.sleep(for: .seconds(backoff))
                         backoff = min(backoff * 2, 30)

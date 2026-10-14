@@ -27,7 +27,8 @@ public final class KeepAwake {
     private let smoothStart: SmoothStart
     private let defaults = UserDefaults.standard
     private var observers: [NSObjectProtocol] = []
-    private static let savedModeKey = "keepAwakeSavedStandbyMode"
+    private static let legacySavedModeKey = "keepAwakeSavedStandbyMode"
+    private static func savedModeKey(_ identity: String) -> String { "keepAwakeSavedStandbyMode.\(identity)" }
 
     public init(speaker: SpeakerModel, smoothStart: SmoothStart) {
         self.speaker = speaker
@@ -52,27 +53,43 @@ public final class KeepAwake {
     }
 
     private func screenOn() {
-        guard enabled, speaker.connection == .connected else { return }
+        guard !speaker.isUpdatingFirmware else { return }
+        guard enabled, speaker.connection == .connected, let identity = speaker.restorationIdentity else { return }
         Task {
-            if defaults.string(forKey: Self.savedModeKey) == nil, let mode = await speaker.liveStandbyMode(), mode != .never {
-                defaults.set(mode.rawValue, forKey: Self.savedModeKey)
+            let key = Self.savedModeKey(identity)
+            if defaults.string(forKey: key) == nil, let mode = await speaker.liveStandbyMode(), mode != .never {
+                guard enabled, speaker.restorationIdentity == identity else { return }
+                defaults.set(mode.rawValue, forKey: key)
             }
-            speaker.setStandbyMode(.never)
+            guard enabled, speaker.restorationIdentity == identity,
+                  await speaker.setStandbyModeAndWait(.never) else { return }
+            guard enabled, speaker.restorationIdentity == identity else { return }
             await speaker.wakeIfNeeded()
         }
     }
 
     private func screenOff() {
+        guard !speaker.isUpdatingFirmware else { return }
         guard enabled, speaker.connection == .connected else { return }
         Task {
             await restoreStandbyMode()
-            if !smoothStart.usbRunning { speaker.turnOff() }
+            // Screen automation owns only a quiet USB session. Never interrupt Wi-Fi, TV,
+            // Bluetooth, optical or AUX playback just because the Mac display slept.
+            if speaker.source == .usb, !smoothStart.usbRunning { speaker.turnOff(force: true) }
         }
     }
 
     private func restoreStandbyMode() async {
-        guard let raw = defaults.string(forKey: Self.savedModeKey), let mode = StandbyMode(rawValue: raw) else { return }
-        speaker.setStandbyMode(mode)
-        defaults.removeObject(forKey: Self.savedModeKey)
+        guard let identity = speaker.restorationIdentity else { return }
+        let key = Self.savedModeKey(identity)
+        if defaults.string(forKey: key) == nil,
+           let legacy = defaults.string(forKey: Self.legacySavedModeKey) {
+            defaults.set(legacy, forKey: key)
+            defaults.removeObject(forKey: Self.legacySavedModeKey)
+        }
+        guard let raw = defaults.string(forKey: key), let mode = StandbyMode(rawValue: raw) else { return }
+        if await speaker.setStandbyModeAndWait(mode) {
+            defaults.removeObject(forKey: key)
+        }
     }
 }

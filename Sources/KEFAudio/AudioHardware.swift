@@ -75,13 +75,17 @@ public enum AudioHardware {
 
     /// Average scalar volume (0…1) across the device's output elements.
     public static func volume(_ id: AudioObjectID) -> Float? {
-        let values = volumeElements(id).compactMap { el -> Float? in
-            var a = address(kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyScopeOutput, el)
-            var v: Float32 = 0
-            var size = UInt32(4)
-            return AudioObjectGetPropertyData(id, &a, 0, nil, &size, &v) == noErr ? v : nil
-        }
+        let values = volumeElements(id).compactMap { volume(id, element: $0) }
         return values.isEmpty ? nil : values.reduce(0, +) / Float(values.count)
+    }
+
+    /// Reads one channel. Listener callbacks use this instead of rescanning every channel for
+    /// each per-channel notification.
+    static func volume(_ id: AudioObjectID, element: UInt32) -> Float? {
+        var a = address(kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyScopeOutput, element)
+        var v: Float32 = 0
+        var size = UInt32(4)
+        return AudioObjectGetPropertyData(id, &a, 0, nil, &size, &v) == noErr ? v : nil
     }
 
     @discardableResult
@@ -111,5 +115,48 @@ public enum AudioHardware {
     @discardableResult
     public static func setMuted(_ id: AudioObjectID, _ muted: Bool) -> Bool {
         setUInt32(id, address(kAudioDevicePropertyMute, kAudioDevicePropertyScopeOutput), muted ? 1 : 0)
+    }
+
+    // MARK: Who is playing
+
+    /// Apps currently running audio output to `device` (macOS 14+ process objects). Used to name
+    /// the app that keeps an audio stream open to the KEF, e.g. the iOS Simulator.
+    public static func processesPlaying(to device: AudioObjectID) -> [pid_t] {
+        var a = address(kAudioHardwarePropertyProcessObjectList)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(system, &a, 0, nil, &size) == noErr else { return [] }
+        var objects = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(system, &a, 0, nil, &size, &objects) == noErr else { return [] }
+        return objects.compactMap { process -> pid_t? in
+            guard uint32(process, address(kAudioProcessPropertyIsRunningOutput)) == 1 else { return nil }
+            var d = address(kAudioProcessPropertyDevices, kAudioObjectPropertyScopeOutput)
+            var dSize: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(process, &d, 0, nil, &dSize) == noErr, dSize > 0 else { return nil }
+            var devices = [AudioObjectID](repeating: 0, count: Int(dSize) / MemoryLayout<AudioObjectID>.size)
+            guard AudioObjectGetPropertyData(process, &d, 0, nil, &dSize, &devices) == noErr, devices.contains(device) else { return nil }
+            var pid: pid_t = 0
+            var pSize = UInt32(MemoryLayout<pid_t>.size)
+            var p = address(kAudioProcessPropertyPID)
+            guard AudioObjectGetPropertyData(process, &p, 0, nil, &pSize, &pid) == noErr else { return nil }
+            return pid
+        }
+    }
+
+    // MARK: dB ↔ scalar (the device's own curve, as macOS uses it)
+
+    public static func decibels(_ id: AudioObjectID, forScalar scalar: Float) -> Float? {
+        translate(id, kAudioDevicePropertyVolumeScalarToDecibels, scalar)
+    }
+
+    public static func scalar(_ id: AudioObjectID, forDecibels db: Float) -> Float? {
+        translate(id, kAudioDevicePropertyVolumeDecibelsToScalar, db)
+    }
+
+    private static func translate(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector, _ value: Float) -> Float? {
+        guard let el = volumeElements(id).first else { return nil }
+        var a = address(selector, kAudioDevicePropertyScopeOutput, el)
+        var v = Float32(value)
+        var size = UInt32(4)
+        return AudioObjectGetPropertyData(id, &a, 0, nil, &size, &v) == noErr ? v : nil
     }
 }

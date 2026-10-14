@@ -5,7 +5,7 @@ import Network
 import Observation
 import os
 
-let log = Logger(subsystem: "com.github.yeutterg.kefbar", category: "speaker")
+let log = Logger(subsystem: "com.github.yeutterg.bookshelfbar", category: "speaker")
 
 /// Everything the UI shows about the speaker, kept live from the speaker's event queue.
 @MainActor
@@ -61,6 +61,9 @@ public final class SpeakerModel {
 
     public var isOn: Bool { status == .powerOn }
     public var finish: KEFFinish { info?.finish ?? .unknown }
+    public var restorationIdentity: String? {
+        info?.kefId ?? defaults.string(forKey: Self.savedSpeakerKey) ?? host
+    }
 
     private(set) var client: KEFClient?
     private var discoveryTask: Task<Void, Never>?
@@ -68,6 +71,9 @@ public final class SpeakerModel {
     private var volumeWrite: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
     private var connectTask: Task<Bool, Never>?
+    private var connectTaskGeneration: Int?
+    private var connectionGeneration = 0
+    private var oneShotManualHost: String?
     private var pathMonitor: NWPathMonitor?
     private var wakeObserver: NSObjectProtocol?
     private var lastContact = Date.distantPast
@@ -78,7 +84,8 @@ public final class SpeakerModel {
     private let defaults = UserDefaults.standard
     private static let savedSpeakerKey = "selectedKefId"
     private static let savedHostKey = "manualHost"
-    private static let pendingWakeRestoreKey = "pendingWakeRestore"
+    private static let legacyPendingWakeRestoreKey = "pendingWakeRestore"
+    private static func pendingWakeRestoreKey(_ identity: String) -> String { "pendingWakeRestore.\(identity)" }
 
     public init() {}
 
@@ -120,6 +127,7 @@ public final class SpeakerModel {
 
     /// Back to the setup step, e.g. to switch to another pair.
     public func forget() {
+        advanceConnectionGeneration()
         eventTask?.cancel()
         eventTask = nil
         if let id = info?.kefId ?? defaults.string(forKey: Self.savedSpeakerKey) { defaults.removeObject(forKey: Self.hostKey(id)) }
@@ -138,6 +146,7 @@ public final class SpeakerModel {
     /// status light comes on), then restores its previous state. Speakers that are already on
     /// get a brief mute instead.
     public func identify(_ speaker: KEFSpeakerInfo) async {
+        guard !isUpdatingFirmware else { return }
         guard let host = try? await KEFDiscovery.resolveHost(for: speaker) else { return }
         let c = KEFClient(host: host)
         guard let status = try? await c.status() else { return }
@@ -157,6 +166,7 @@ public final class SpeakerModel {
     }
 
     func select(_ speaker: KEFSpeakerInfo) async {
+        advanceConnectionGeneration()
         info = speaker
         defaults.set(speaker.kefId, forKey: Self.savedSpeakerKey)
         await ensureConnected("selected")
@@ -164,8 +174,15 @@ public final class SpeakerModel {
 
     /// Manual fallback when Bonjour is blocked (guest networks, VLANs).
     public func connect(host: String, remember: Bool = false) async {
+        guard let normalized = KEFClient.normalizedHost(host) else {
+            lastError = KEFError.invalidHost(host).localizedDescription
+            connection = .unreachable(lastError ?? "Invalid speaker address")
+            return
+        }
+        advanceConnectionGeneration()
+        oneShotManualHost = normalized
         if remember {
-            defaults.set(host, forKey: Self.savedHostKey)
+            defaults.set(normalized, forKey: Self.savedHostKey)
             needsSetup = false
         }
         await ensureConnected("manual host")
@@ -177,51 +194,67 @@ public final class SpeakerModel {
     /// callers share one attempt. Returns whether the speaker is reachable now.
     @discardableResult
     public func ensureConnected(_ reason: String) async -> Bool {
-        if let running = connectTask { return await running.value }
+        let generation = connectionGeneration
+        if let running = connectTask, connectTaskGeneration == generation { return await running.value }
+        connectTask?.cancel()
         // Hard cap per attempt so one stuck attempt can never block every later reconnect.
         let task = Task {
-            (try? await withDeadline(12, label: "connect") { await self.attemptConnection(reason) })
-                ?? self.timedOutAttempt()
+            (try? await withDeadline(12, label: "connect") { await self.attemptConnection(reason, generation: generation) })
+                ?? self.timedOutAttempt(generation: generation)
         }
         connectTask = task
+        connectTaskGeneration = generation
         let ok = await task.value
-        connectTask = nil
+        if connectionGeneration == generation {
+            connectTask = nil
+            connectTaskGeneration = nil
+        }
         return ok
     }
 
-    private func timedOutAttempt() -> Bool {
-        markUnhealthy(KEFError.timedOut("speaker"))
+    private func timedOutAttempt(generation: Int) -> Bool {
+        guard connectionGeneration == generation else { return false }
+        markUnhealthy(KEFError.timedOut("speaker"), generation: generation)
         return false
     }
 
-    private func attemptConnection(_ reason: String) async -> Bool {
+    private func attemptConnection(_ reason: String, generation: Int) async -> Bool {
+        guard connectionGeneration == generation else { return false }
         let kefId = info?.kefId ?? defaults.string(forKey: Self.savedSpeakerKey)
-        let manual = defaults.string(forKey: Self.savedHostKey)
+        let manual = oneShotManualHost ?? defaults.string(forKey: Self.savedHostKey)
+        let bonjour = info?.kefId == kefId ? info : nil
+        if oneShotManualHost == manual { oneShotManualHost = nil }
         if !everConnected, connection != .connected { connection = .connecting(info?.name ?? manual ?? "speakers") }
-        log.info("connect (\(reason, privacy: .public)) cached=\(kefId.flatMap { self.defaults.string(forKey: Self.hostKey($0)) } ?? manual ?? "-", privacy: .public)")
+        log.info("connect (\(reason, privacy: .public)) candidate=\(manual ?? kefId.flatMap { self.defaults.string(forKey: Self.hostKey($0)) } ?? "-", privacy: .public)")
         do {
             let found: String
             if let kefId {
                 found = try await KEFLocator.locate(kefId: kefId,
-                                                    cachedHost: defaults.string(forKey: Self.hostKey(kefId)) ?? manual,
-                                                    bonjour: info)
+                                                    cachedHost: manual ?? defaults.string(forKey: Self.hostKey(kefId)),
+                                                    bonjour: bonjour)
             } else if let manual {
                 _ = try await withDeadline(4, label: manual) { try await KEFClient(host: manual, timeout: 3).status() }
                 found = manual
             } else {
                 return false
             }
-            if found != host || client == nil {
-                host = found
-                client = KEFClient(host: found, password: SpeakerPassword.load(for: kefId) ?? "")
+            guard connectionGeneration == generation, !Task.isCancelled else { return false }
+            let candidate = (found == host ? client : nil)
+                ?? KEFClient(host: found, password: SpeakerPassword.load(for: kefId) ?? "")
+            let live = try await withDeadline(5, label: "refresh") { try await Self.readLiveState(candidate) }
+            guard connectionGeneration == generation, !Task.isCancelled else { return false }
+            host = found
+            if client !== candidate {
+                client = candidate
                 eventTask?.cancel()
                 eventTask = nil
             }
-            try await withDeadline(5, label: "refresh") { try await self.refresh() }
+            (status, source, volume, muted, powerTarget) = live
             markHealthy(found, kefId: kefId)
             return true
         } catch {
-            markUnhealthy(error)
+            guard connectionGeneration == generation, !Task.isCancelled else { return false }
+            markUnhealthy(error, generation: generation)
             return false
         }
     }
@@ -242,15 +275,18 @@ public final class SpeakerModel {
         updateEventStream(force: true)
     }
 
-    private func markUnhealthy(_ error: Error) {
+    private func markUnhealthy(_ error: Error, generation: Int? = nil) {
+        if let generation, generation != connectionGeneration { return }
         log.error("connection problem: \(error.localizedDescription, privacy: .public)")
         if (error as? KEFError) == .localNetworkDenied || (error as? URLError)?.code == .notConnectedToInternet {
             localNetworkDenied = true
         } else if let probeHost = host ?? info.flatMap({ defaults.string(forKey: Self.hostKey($0.kefId)) })
                     ?? defaults.string(forKey: Self.savedHostKey) {
             // Distinguish "permission off" from "speaker not answering" with a direct probe.
+            let activeGeneration = connectionGeneration
             Task {
-                if await KEFDiscovery.probeLocalNetwork(host: probeHost) == .denied {
+                if await KEFDiscovery.probeLocalNetwork(host: probeHost) == .denied,
+                   self.connectionGeneration == activeGeneration {
                     log.error("local network access denied for this app")
                     localNetworkDenied = true
                     connection = .unreachable("Local network access denied")
@@ -285,7 +321,7 @@ public final class SpeakerModel {
                 await self.ensureConnected("network change")
             }
         }
-        monitor.start(queue: DispatchQueue(label: "KEFBar.path"))
+        monitor.start(queue: DispatchQueue(label: "BookshelfBar.path"))
         pathMonitor = monitor
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -298,31 +334,77 @@ public final class SpeakerModel {
     }
 
     public func refresh() async throws {
+        let generation = connectionGeneration
         guard let c = client else { return }
-        async let s = c.status()
-        async let src = c.source()
-        async let v = c.volume()
-        async let m = c.isMuted()
-        async let p = c.powerTarget()
-        (status, source, volume, muted, powerTarget) = try await (s, src, v, m, p)
+        let live = try await Self.readLiveState(c)
+        guard generation == connectionGeneration, client === c else { return }
+        (status, source, volume, muted, powerTarget) = live
+    }
+
+    private static func readLiveState(_ client: KEFClient) async throws
+        -> (SpeakerStatus, PhysicalSource, Int, Bool, String) {
+        async let s = client.status()
+        async let src = client.source()
+        async let v = client.volume()
+        async let m = client.isMuted()
+        async let p = client.powerTarget()
+        return try await (s, src, v, m, p)
     }
 
     public func refreshSettings() async {
+        let generation = connectionGeneration
         guard let c = client else { return }
-        deskMode = (try? await c.get(.deskMode).bool) ?? deskMode
-        wallMode = (try? await c.get(.wallMode).bool) ?? wallMode
-        bassExtension = (try? await c.get(.bassExtension).string).flatMap(BassExtension.init) ?? bassExtension
-        treble = (try? await c.get(.trebleAmount).double) ?? treble
-        balance = (try? await c.get(.balance).int) ?? balance
-        standbyMode = (try? await c.get(.standbyMode).string).flatMap(StandbyMode.init) ?? standbyMode
-        wakeUpSource = (try? await c.get(.wakeUpSource).string).flatMap(WakeUpSource.init) ?? wakeUpSource
-        maximumVolume = (try? await c.get(.maximumVolume).int) ?? maximumVolume
-        profileName = (try? await c.get(.profileName).string) ?? profileName
+        async let desk = try? c.get(.deskMode).bool
+        async let wall = try? c.get(.wallMode).bool
+        async let bass = try? c.get(.bassExtension).string
+        async let trebleValue = try? c.get(.trebleAmount).double
+        async let balanceValue = try? c.get(.balance).int
+        async let standby = try? c.get(.standbyMode).string
+        async let wake = try? c.get(.wakeUpSource).string
+        async let maximum = try? c.get(.maximumVolume).int
+        async let profile = try? c.get(.profileName).string
+        let values = await (desk, wall, bass, trebleValue, balanceValue, standby, wake, maximum, profile)
+        guard generation == connectionGeneration, client === c else { return }
+        deskMode = values.0 ?? deskMode
+        wallMode = values.1 ?? wallMode
+        bassExtension = values.2.flatMap(BassExtension.init) ?? bassExtension
+        treble = values.3 ?? treble
+        balance = values.4 ?? balance
+        standbyMode = values.5.flatMap(StandbyMode.init) ?? standbyMode
+        wakeUpSource = values.6.flatMap(WakeUpSource.init) ?? wakeUpSource
+        maximumVolume = values.7 ?? maximumVolume
+        profileName = values.8 ?? profileName
     }
+
+    // MARK: Firmware update lockout
+
+    /// A firmware update is in progress. While true, BookshelfBar sends the speaker no commands at
+    /// all (only read-only status checks), and Smooth Start / Keep Awake stand down, so nothing
+    /// we do can interrupt the update. Persisted, so a relaunch mid-update stays locked.
+    public private(set) var isUpdatingFirmware = UserDefaults.standard.string(forKey: "firmwareLockFromVersion") != nil
+    /// Firmware version when the lock began; the update counts as done only once it changes.
+    public var firmwareLockFromVersion: String? { defaults.string(forKey: "firmwareLockFromVersion") }
+
+    public func beginFirmwareLock(fromVersion: String) {
+        log.info("firmware lock on (from \(fromVersion, privacy: .public))")
+        defaults.set(fromVersion, forKey: "firmwareLockFromVersion")
+        isUpdatingFirmware = true
+        volumeWrite?.cancel()
+    }
+
+    public func endFirmwareLock() {
+        log.info("firmware lock off")
+        defaults.removeObject(forKey: "firmwareLockFromVersion")
+        isUpdatingFirmware = false
+    }
+
+    /// Read-only client for the updater (status polling is allowed during the lock).
+    public var statusClient: KEFClient? { client }
 
     // MARK: Actions
 
     public func setVolume(_ value: Int) {
+        guard !isUpdatingFirmware else { return }
         volume = min(max(value, 0), 100)
         // Coalesce slider drags: only the latest value is sent.
         volumeWrite?.cancel()
@@ -335,12 +417,14 @@ public final class SpeakerModel {
     }
 
     public func toggleMute() {
+        guard !isUpdatingFirmware else { return }
         muted.toggle()
         let m = muted
         Task { await perform { try await $0.setMuted(m) } }
     }
 
     public func setSource(_ s: PhysicalSource) {
+        guard !isUpdatingFirmware else { return }
         if s == .standby { turnOff(); return }
         source = s
         status = .powerOn
@@ -348,55 +432,102 @@ public final class SpeakerModel {
     }
 
     public func togglePower() {
+        guard !isUpdatingFirmware else { return }
+        rewokenBy = nil
         if isOn { turnOff() } else {
             willChangePower?(true)
             setSource(.usb)
         }
     }
 
-    /// Set by Smooth Start: called right before KEF Bar changes the speaker's power, so the USB
+    /// Set by Smooth Start: called right before BookshelfBar changes the speaker's power, so the USB
     /// volume can be parked low before the speaker drops off USB.
     public var willChangePower: ((_ on: Bool) -> Void)?
 
     /// Set by Smooth Start: some app on this Mac has an audio stream open to the KEF.
     public var usbStreamActive = false
 
-    /// Standby that sticks. With Wake On set to USB Audio, the firmware wakes straight back up
-    /// if an app is holding an audio stream open to it when it enters standby (the iOS
-    /// Simulator, a paused browser tab…). In that case only: switch the wake source off, enter
-    /// standby, and restore it a few seconds later (restoring doesn't wake it).
+    /// Set by Smooth Start: names of the apps currently holding an audio stream open to the KEF.
+    public var streamHolders: () -> [String] = { [] }
+
+    /// The speaker woke straight back up after being turned off, because these apps hold an
+    /// audio stream open to it. The UI offers "Turn Off Anyway".
+    public private(set) var rewokenBy: [String]?
+
+    /// Normal standby keeps the speaker in the macOS Sound menu, and playing audio wakes it.
+    /// But with Wake On = USB Audio, the firmware wakes straight back up if an app holds an audio
+    /// stream open to it at that moment (the iOS Simulator, a paused browser tab…).
     ///
-    /// Side effect, measured: entering standby with USB wake off also powers down the speaker's
-    /// USB interface until its next wake, so Mac audio can't wake it. That's why this is limited
-    /// to the stream-held case, where it would otherwise never stay off at all.
-    public func turnOff() {
+    /// `force: true` makes standby stick anyway: switch the wake source off, enter standby, and
+    /// restore it a few seconds later (restoring doesn't wake it). Measured side effect: the
+    /// speaker also powers down its USB interface until its next wake, so it leaves the Sound
+    /// menu and Mac audio can't wake it. Hence only on request, or from Keep Awake at screen-off.
+    public func turnOff(force: Bool = false) {
+        guard !isUpdatingFirmware else { return }
+        rewokenBy = nil
         willChangePower?(false)
         status = .standby
         source = .standby
         guard let client else { return }
-        let streamHeld = usbStreamActive
+        let generation = connectionGeneration
+        let streamHeld = force && usbStreamActive
+        let identity = restorationIdentity ?? client.host
+        let restoreKey = Self.pendingWakeRestoreKey(identity)
         Task {
             let wake = streamHeld ? ((try? await client.get(.wakeUpSource).string).flatMap(WakeUpSource.init) ?? .none) : .none
             if wake != .none {
-                defaults.set(wake.rawValue, forKey: Self.pendingWakeRestoreKey)
-                try? await client.set(.wakeUpSource, WakeUpSource.none.value)
+                defaults.set(wake.rawValue, forKey: restoreKey)
+                do { try await client.set(.wakeUpSource, WakeUpSource.none.value) }
+                catch {
+                    if generation == connectionGeneration { lastError = error.localizedDescription }
+                    return
+                }
             }
-            await perform { try await $0.setSource(.standby) }
+            do { try await client.setSource(.standby) }
+            catch { if generation == connectionGeneration { lastError = error.localizedDescription } }
+            if !force, generation == connectionGeneration, self.client === client, usbStreamActive {
+                // The firmware re-wakes ~3 s later if a held stream is the cause; check once.
+                try? await Task.sleep(for: .seconds(6))
+                if generation == connectionGeneration, self.client === client,
+                   (try? await client.status()) == .powerOn {
+                    status = .powerOn
+                    source = (try? await client.source()) ?? source
+                    let names = streamHolders()
+                    let holders = names.isEmpty ? ["another app"] : names
+                    rewokenBy = holders
+                    log.info("re-woken after standby by \(holders.joined(separator: ", "), privacy: .public)")
+                }
+            }
             if wake != .none {
                 try? await Task.sleep(for: .seconds(6))
-                try? await client.set(.wakeUpSource, wake.value)
-                defaults.removeObject(forKey: Self.pendingWakeRestoreKey)
+                do {
+                    try await client.set(.wakeUpSource, wake.value)
+                    defaults.removeObject(forKey: restoreKey)
+                } catch {
+                    if generation == connectionGeneration { lastError = error.localizedDescription }
+                }
             }
         }
     }
 
     /// If the app quit during `turnOff`'s window, put the wake source back.
     private func restorePendingWakeSource() {
-        guard let raw = defaults.string(forKey: Self.pendingWakeRestoreKey), let wake = WakeUpSource(rawValue: raw),
-              let client else { return }
+        guard !isUpdatingFirmware else { return }
+        guard let identity = restorationIdentity, let client else { return }
+        let key = Self.pendingWakeRestoreKey(identity)
+        if defaults.string(forKey: key) == nil,
+           let legacy = defaults.string(forKey: Self.legacyPendingWakeRestoreKey) {
+            defaults.set(legacy, forKey: key)
+            defaults.removeObject(forKey: Self.legacyPendingWakeRestoreKey)
+        }
+        guard let raw = defaults.string(forKey: key), let wake = WakeUpSource(rawValue: raw) else { return }
         Task {
-            try? await client.set(.wakeUpSource, wake.value)
-            defaults.removeObject(forKey: Self.pendingWakeRestoreKey)
+            do {
+                try await client.set(.wakeUpSource, wake.value)
+                defaults.removeObject(forKey: key)
+            } catch {
+                lastError = error.localizedDescription
+            }
         }
     }
 
@@ -408,8 +539,13 @@ public final class SpeakerModel {
     /// Wakes the speaker into `source` only if it's currently in standby. `notify: false` is
     /// for callers that already prepared (Smooth Start itself).
     public func wakeIfNeeded(into s: PhysicalSource = .usb, notify: Bool = true) async {
-        guard client != nil else { return }
-        if let live = try? await client?.status() { status = live }
+        guard !isUpdatingFirmware else { return }
+        let generation = connectionGeneration
+        guard let client else { return }
+        if let live = try? await client.status() {
+            guard generation == connectionGeneration, self.client === client else { return }
+            status = live
+        }
         guard status == .standby else { return }
         if notify { willChangePower?(true) }
         source = s
@@ -424,12 +560,24 @@ public final class SpeakerModel {
     public func setTreble(_ db: Double) { treble = (db * 4).rounded() / 4; write(.trebleAmount, .double(treble)) }
     public func setBalance(_ v: Int) { balance = v; write(.balance, .i32(v)) }
     public func setStandbyMode(_ m: StandbyMode) { standbyMode = m; write(.standbyMode, m.value) }
+    @discardableResult
+    public func setStandbyModeAndWait(_ mode: StandbyMode) async -> Bool {
+        let old = standbyMode
+        standbyMode = mode
+        let succeeded = await perform { try await $0.set(.standbyMode, mode.value) }
+        if !succeeded { standbyMode = old }
+        return succeeded
+    }
     public func setWakeUpSource(_ w: WakeUpSource) { wakeUpSource = w; write(.wakeUpSource, w.value) }
     public func setMaximumVolume(_ v: Int) { maximumVolume = v; write(.maximumVolume, .i32(v)) }
 
     public func setPassword(_ password: String) {
         SpeakerPassword.save(password, for: info?.kefId)
-        if let host { client = KEFClient(host: host, password: password) }
+        if let host {
+            advanceConnectionGeneration()
+            client = KEFClient(host: host, password: password)
+            Task { await ensureConnected("password changed") }
+        }
     }
 
     // MARK: Private
@@ -448,6 +596,7 @@ public final class SpeakerModel {
     /// Asks macOS for Local Network access (shows the system prompt the first time). A denial
     /// can't be re-prompted, so the UI then points at System Settings.
     public func checkLocalNetworkAccess() {
+        let generation = connectionGeneration
         Task {
             // Browsing triggers the system prompt on first run; a direct probe to the remembered
             // address is the definitive check once we have one.
@@ -455,6 +604,7 @@ public final class SpeakerModel {
             let known = info.flatMap { defaults.string(forKey: Self.hostKey($0.kefId)) }
                 ?? defaults.string(forKey: Self.savedSpeakerKey).flatMap { defaults.string(forKey: Self.hostKey($0)) }
             if access != .denied, let known { access = await KEFDiscovery.probeLocalNetwork(host: known) }
+            guard generation == connectionGeneration else { return }
             log.info("local network access: \(String(describing: access), privacy: .public)")
             if access == .denied {
                 localNetworkDenied = true
@@ -493,26 +643,58 @@ public final class SpeakerModel {
 
     /// Runs a command; on a connection failure, reconnects (possibly to a new address) and
     /// retries it once.
-    private func perform(_ action: @Sendable (KEFClient) async throws -> Void) async {
-        guard let client else { await ensureConnected("command without connection"); return }
+    @discardableResult
+    private func perform(_ action: @Sendable (KEFClient) async throws -> Void) async -> Bool {
+        // Hard stop during a firmware update: no command may reach the speaker.
+        guard !isUpdatingFirmware else {
+            log.info("command blocked: firmware update in progress")
+            return false
+        }
+        let generation = connectionGeneration
+        if client == nil { _ = await ensureConnected("command without connection") }
+        guard generation == connectionGeneration, let client else { return false }
         do {
             try await action(client)
+            guard generation == connectionGeneration else { return false }
             lastError = nil
             lastContact = .now
+            return true
         } catch let error as KEFError where error == .unauthorized {
             lastError = error.localizedDescription
+            return false
         } catch {
-            guard await ensureConnected("command failed"), let fresh = self.client else {
+            guard generation == connectionGeneration,
+                  await ensureConnected("command failed"),
+                  generation == connectionGeneration,
+                  let fresh = self.client else {
                 lastError = error.localizedDescription
-                return
+                return false
             }
             do {
                 try await action(fresh)
+                guard generation == connectionGeneration else { return false }
                 lastError = nil
+                lastContact = .now
+                return true
             } catch {
                 lastError = error.localizedDescription
+                return false
             }
         }
+    }
+
+    private func advanceConnectionGeneration() {
+        connectionGeneration += 1
+        connectTask?.cancel()
+        connectTask = nil
+        connectTaskGeneration = nil
+        eventTask?.cancel()
+        eventTask = nil
+        retryTask?.cancel()
+        retryTask = nil
+        volumeWrite?.cancel()
+        volumeWrite = nil
+        oneShotManualHost = nil
     }
 
     private func updateEventStream(force: Bool = false) {
@@ -527,14 +709,18 @@ public final class SpeakerModel {
 
     private func startEvents() {
         guard let client else { return }
+        let generation = connectionGeneration
         let paths: [KEFPath] = [.physicalSource, .speakerStatus, .volume, .mute, .powerTarget]
         // A failing long-poll is the earliest sign the connection went stale.
         let onFailure: @Sendable (Error) -> Void = { [weak self] _ in
-            Task { @MainActor in await self?.ensureConnected("event stream") }
+            Task { @MainActor in
+                guard let self, self.connectionGeneration == generation else { return }
+                await self.ensureConnected("event stream")
+            }
         }
         eventTask = Task { [weak self] in
             for await event in client.events(paths, onFailure: onFailure) {
-                guard let self, let v = event.value else { continue }
+                guard let self, self.connectionGeneration == generation, let v = event.value else { continue }
                 self.lastContact = .now
                 self.apply(event.path, v)
             }

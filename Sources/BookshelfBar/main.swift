@@ -1,6 +1,22 @@
 import AppKit
-import KEFBarCore
+import BookshelfBarCore
 import SwiftUI
+
+enum AppInfo {
+    static let name = "BookshelfBar"
+
+    /// The app was called KEF Bar (bundle id com.github.yeutterg.kefbar). Carry its settings
+    /// over once: chosen speaker, remembered address, volume, Smooth Start options.
+    static func migrateLegacyDefaults() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "migratedFromKEFBar"),
+              let old = defaults.persistentDomain(forName: "com.github.yeutterg.kefbar") else { return }
+        for (key, value) in old where defaults.object(forKey: key) == nil {
+            defaults.set(value, forKey: key)
+        }
+        defaults.set(true, forKey: "migratedFromKEFBar")
+    }
+}
 
 /// Owns the long-lived models. One instance for the app's lifetime.
 @MainActor
@@ -9,12 +25,18 @@ final class AppState {
     let speaker = SpeakerModel()
     lazy var smoothStart = SmoothStart(speaker: speaker)
     lazy var keepAwake = KeepAwake(speaker: speaker, smoothStart: smoothStart)
+    lazy var firmware = FirmwareUpdater(speaker: speaker)
 
     func start() {
+        AppInfo.migrateLegacyDefaults()
         speaker.start()
         smoothStart.start()
         keepAwake.start()
         listenForCommands()
+        Task { @MainActor in
+            for _ in 0..<30 where self.speaker.connection != .connected { try? await Task.sleep(for: .seconds(1)) }
+            await self.firmware.refresh()
+        }
         watchLocalNetworkPermission()
     }
 
@@ -95,11 +117,11 @@ final class AppState {
     }
 
     /// Local automation hook (Shortcuts, scripts, tests): post the distributed notification
-    /// `com.github.yeutterg.kefbar.power` with object "on", "off" or "toggle". Goes through the same
+    /// `com.github.yeutterg.bookshelfbar.power` with object "on", "off" or "toggle". Goes through the same
     /// code path as the power switch, including Smooth Start.
     private func listenForCommands() {
         DistributedNotificationCenter.default().addObserver(
-            forName: .init("com.github.yeutterg.kefbar.power"), object: nil, queue: .main) { note in
+            forName: .init("com.github.yeutterg.bookshelfbar.power"), object: nil, queue: .main) { note in
             let command = note.object as? String
             MainActor.assumeIsolated {
                 let speaker = AppState.shared.speaker
@@ -113,13 +135,13 @@ final class AppState {
     }
 }
 
-struct KEFBarApp: App {
+struct BookshelfBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     private let state = AppState.shared
 
     var body: some Scene {
         MenuBarExtra {
-            RootView(speaker: state.speaker, smoothStart: state.smoothStart, keepAwake: state.keepAwake)
+            RootView(speaker: state.speaker, smoothStart: state.smoothStart, keepAwake: state.keepAwake, firmware: state.firmware)
         } label: {
             MenuBarIcon(speaker: state.speaker, smoothStart: state.smoothStart)
         }
@@ -145,15 +167,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor private func showPreview() {
         let state = AppState.shared
-        // `--page sound|about|setup` opens the preview on a specific page.
+        // `--page settings|setup` opens the preview on a specific page.
         let page = CommandLine.arguments.firstIndex(of: "--page").flatMap { i in
             i + 1 < CommandLine.arguments.count ? Page(rawValue: CommandLine.arguments[i + 1]) : nil
         } ?? .main
-        let host = NSHostingView(rootView: RootView(speaker: state.speaker, smoothStart: state.smoothStart, keepAwake: state.keepAwake, page: page))
+        let host = NSHostingView(rootView: RootView(speaker: state.speaker, smoothStart: state.smoothStart, keepAwake: state.keepAwake, firmware: state.firmware, page: page))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 364, height: 600),
                               styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
         window.titlebarAppearsTransparent = true
-        window.title = "KEF Bar Preview"
+        window.title = "BookshelfBar Preview"
         window.contentView = host
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -183,8 +205,8 @@ struct LocalNetworkPrompt: View {
             Image(systemName: "network")
                 .font(.system(size: 34))
                 .foregroundStyle(.tint)
-            Text("KEF Bar needs Local Network access").font(.headline)
-            Text("macOS is blocking KEF Bar from reaching your speakers. Turn on KEF Bar in Local Network settings. This window closes by itself once it's allowed.")
+            Text("BookshelfBar needs Local Network access").font(.headline)
+            Text("macOS is blocking BookshelfBar from reaching your speakers. Turn on BookshelfBar in Local Network settings. This window closes by itself once it's allowed.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -207,5 +229,5 @@ if let index = CommandLine.arguments.firstIndex(of: "--artwork-snapshot") {
     }
     try writeArtworkSnapshot(to: CommandLine.arguments[index + 1])
 } else {
-    KEFBarApp.main()
+    BookshelfBarApp.main()
 }

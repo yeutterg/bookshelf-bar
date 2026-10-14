@@ -36,13 +36,24 @@ public enum KEFSigner {
 
     public static func signedWrite(url: URL, path: KEFPath, value: KEFValue, password: String,
                                    seed: Seed = Seed()) throws -> URLRequest {
+        try signedRequest(url: url, path: path, role: "value", valueJSON: try encoder.encode(value), password: password, seed: seed)
+    }
+
+    /// Signed `activate`-role request (actions such as firmware check/download/install).
+    public static func signedActivate(url: URL, path: KEFPath, value: JSONValue = .object([:]), password: String,
+                                      seed: Seed = Seed()) throws -> URLRequest {
+        try signedRequest(url: url, path: path, role: "activate", valueJSON: try encoder.encode(value), password: password, seed: seed)
+    }
+
+    static func signedRequest(url: URL, path: KEFPath, role: String, valueJSON: Data, password: String,
+                              seed: Seed) throws -> URLRequest {
         let salt = try seed.salt ?? randomBytes(6)
         let iv = try seed.iv ?? randomBytes(kCCBlockSizeAES128)
         let timestamp = seed.timestampMilliseconds ?? String(Int(Date().timeIntervalSince1970 * 1000))
         let key = deriveKey(salt: salt, password: password)
 
-        let ciphertext = try encrypt(try encoder.encode(value), key: key, iv: iv)
-        let body: [String: String] = ["path": path.rawValue, "role": "value", "value": (iv + ciphertext).base64EncodedString()]
+        let ciphertext = try encrypt(valueJSON, key: key, iv: iv)
+        let body: [String: String] = ["path": path.rawValue, "role": role, "value": (iv + ciphertext).base64EncodedString()]
         let bodyData = try encoder.encode(body)
         let bodyString = String(decoding: bodyData, as: UTF8.self)
 

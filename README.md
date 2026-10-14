@@ -1,4 +1,4 @@
-# KEF Bar
+# BookshelfBar
 
 A native macOS menu bar app for KEF wireless speakers (LSX II LT, LSX II and the rest of the W2 platform), with a fix for the volume surge when a sleeping speaker starts playing over USB.
 
@@ -17,8 +17,8 @@ Requires macOS 26 or later. Not affiliated with KEF.
 ```sh
 swift build                 # library, CLI and app
 swift test                  # unit tests
-scripts/bundle.sh           # builds build/KEFBar.app
-open build/KEFBar.app
+scripts/bundle.sh           # builds build/BookshelfBar.app
+open build/BookshelfBar.app
 ```
 
 On first launch macOS asks for Local Network access, which the app needs to find and control the speakers.
@@ -48,8 +48,8 @@ When a sleeping speaker starts playing over USB, it wakes, drops off the USB bus
 |---|---|
 | `KEFKit` | HTTP client, request signing, event stream, Bonjour discovery, finish decoding |
 | `KEFAudio` | CoreAudio: the KEF USB device, its volume, mute and default-output state |
-| `KEFBarCore` | Speaker model for the UI and the Smooth Start logic |
-| `KEFBar` | The SwiftUI menu bar app |
+| `BookshelfBarCore` | Speaker model for the UI and the Smooth Start logic |
+| `BookshelfBar` | The SwiftUI menu bar app |
 | `kefctl` | CLI |
 
 ## Credits

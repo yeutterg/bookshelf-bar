@@ -83,6 +83,20 @@ import Testing
         #expect(KEFFinish.decode(serial: serial, modelName: "LSX II LT").name == name)
     }
 
+    @Test(arguments: [
+        ("LSX2G41102R32R1G", "", "Carbon Black"),
+        ("", "SP4041AA", "Mineral White"),
+        ("", "SP4041CA", "Cobalt Blue"),
+        ("", "SP4041KA", "Lava Red"),
+        ("", "SP4041JB", "Olive Green"),
+        ("", "SP4041DA", "Soundwave"),
+        ("", "SP4041A5AA", "Cotton White"),
+        ("", "SP4041L0AA", "Amber Haze"),
+    ])
+    func decodesLSXIIFinishes(serial: String, modelCode: String, name: String) {
+        #expect(KEFFinish.decode(serial: serial, modelName: "LSX II", modelCode: modelCode).name == name)
+    }
+
     @Test func unknownModelIsNeutral() {
         #expect(KEFFinish.decode(serial: "LSXII0000M2GR", modelName: "LS60") == .unknown)
     }
@@ -93,4 +107,80 @@ import Testing
         #expect(KEFPath.defaultVolume(.usb).rawValue == "settings:/kef/host/defaultVolumeUSB")
         #expect(KEFPath.defaultVolume(nil).rawValue == "settings:/kef/host/defaultVolumeGlobal")
     }
+
+    @Test func modelSpecificInputs() {
+        #expect(!PhysicalSource.inputs(forModel: "LSX II LT").contains(.analog))
+        #expect(PhysicalSource.inputs(forModel: "LSX II").contains(.analog))
+    }
+}
+
+@Suite struct KEFClientSafetyTests {
+    @Test(arguments: ["", "speaker.local/path", "speaker.local?x=1", "user@speaker.local", "http://speaker.local"])
+    func rejectsMalformedHosts(host: String) {
+        #expect(KEFClient.normalizedHost(host) == nil)
+    }
+
+    @Test(arguments: [
+        (" 192.168.1.20 ", "192.168.1.20"),
+        ("speaker.local", "speaker.local"),
+        ("[fe80::1]", "[fe80::1]"),
+    ])
+    func normalizesValidHosts(raw: String, expected: String) {
+        #expect(KEFClient.normalizedHost(raw) == expected)
+    }
+
+    @Test func transientAuthReadIsNotCachedAsUnsigned() async throws {
+        let state = RequestState()
+        StubURLProtocol.handler = { request in
+            let number = state.next()
+            let path = request.url?.path ?? ""
+            if number == 1 {
+                return Self.response(request, status: 503, body: "temporarily unavailable")
+            }
+            if path.hasSuffix("/getData") {
+                return Self.response(request, body: #"[{"type":"string_","string_":"password"}]"#)
+            }
+            #expect(request.value(forHTTPHeaderField: "Authorization")?.hasPrefix("HMAC_SHA256_AES256 ") == true)
+            return Self.response(request, body: "{}")
+        }
+        defer { StubURLProtocol.handler = nil }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let client = KEFClient(host: "speaker.local", session: URLSession(configuration: config))
+
+        await #expect(throws: KEFError.self) { try await client.set(.mute, .bool(false)) }
+        try await client.set(.mute, .bool(false))
+        #expect(state.count == 3)
+    }
+
+    private static func response(_ request: URLRequest, status: Int = 200, body: String) -> (HTTPURLResponse, Data) {
+        (HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!, Data(body.utf8))
+    }
+}
+
+private final class RequestState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.withLock { value } }
+    func next() -> Int { lock.withLock { value += 1; return value } }
+}
+
+private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        do {
+            guard let handler = Self.handler else { throw URLError(.badServerResponse) }
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+    override func stopLoading() {}
 }

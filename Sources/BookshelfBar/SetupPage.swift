@@ -1,4 +1,4 @@
-import KEFBarCore
+import BookshelfBarCore
 import KEFKit
 import SwiftUI
 
@@ -71,6 +71,34 @@ struct SetupPage: View {
         Task {
             await speaker.identify(info)
             identifying = nil
+        }
+    }
+}
+
+struct LocalNetworkSection: View {
+    let speaker: SpeakerModel
+
+    var body: some View {
+        Section {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Local Network Access Is Off")
+                    Text("Allow BookshelfBar in Privacy & Security › Local Network. It reconnects automatically.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } icon: {
+                Image(systemName: "network").foregroundStyle(.orange)
+            }
+            HStack {
+                Button("Open Privacy Settings") {
+                    NSWorkspace.shared.open(SpeakerModel.localNetworkSettingsURL)
+                }
+                .buttonStyle(.borderedProminent)
+                Spacer()
+                Button("Try Again", action: speaker.retry)
+            }
         }
     }
 }
