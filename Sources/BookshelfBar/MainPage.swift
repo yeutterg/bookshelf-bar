@@ -22,6 +22,8 @@ struct MainPage: View {
                     .frame(height: 140)
                     .frame(maxWidth: .infinity)
                 if let apps = speaker.rewokenBy { RewokenNotice(speaker: speaker, apps: apps) }
+            } header: {
+                if let name = speaker.info?.name, !name.isEmpty { Text(name) }
             }
 
             switch speaker.connection {

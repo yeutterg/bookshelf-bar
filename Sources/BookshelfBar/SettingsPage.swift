@@ -34,7 +34,7 @@ struct SettingsPage: View {
                             Slider(value: Binding(get: { gamma }, set: { gamma = ($0 * 10).rounded() / 10 }),
                                    in: VolumeCurve.range)
                                 .labelsHidden()
-                            Text(gamma <= 1.0 ? "Native" : String(format: "γ %.1f", gamma))
+                            Text(gamma <= 1.0 ? "Native" : String(format: "γ %.2f", 1 / gamma))
                                 .monospacedDigit()
                                 .foregroundStyle(.secondary)
                                 .frame(width: 52, alignment: .trailing)

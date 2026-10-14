@@ -23,8 +23,8 @@ struct MenuBarGlyph: View {
     var body: some View {
         ZStack {
             HStack(spacing: 3.2) {
-                MenuBarCabinet(filled: filled)
-                MenuBarCabinet(filled: filled)
+                MenuBarCabinet(filled: filled, showsCenterDot: state != .offline)
+                MenuBarCabinet(filled: filled, showsCenterDot: state != .offline)
             }
 
             if state == .muted {
@@ -74,6 +74,7 @@ struct MenuBarGlyph: View {
 
 private struct MenuBarCabinet: View {
     let filled: Bool
+    let showsCenterDot: Bool
 
     var body: some View {
         ZStack {
@@ -91,9 +92,11 @@ private struct MenuBarCabinet: View {
                     .stroke(.primary, lineWidth: 0.9)
                     .frame(width: 4.4, height: 4.4)
             }
-            Circle()
-                .fill(.primary)
-                .frame(width: 1.2, height: 1.2)
+            if showsCenterDot {
+                Circle()
+                    .fill(.primary)
+                    .frame(width: 1.2, height: 1.2)
+            }
         }
         .compositingGroup()
         .frame(width: 6, height: 11)
