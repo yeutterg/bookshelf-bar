@@ -12,6 +12,16 @@ A native macOS menu bar app for KEF wireless speakers (LSX II LT, LSX II and the
 
 Requires macOS 26 or later. Not affiliated with KEF.
 
+## Install
+
+```sh
+brew install --cask yeutterg/tap/bookshelfbar
+```
+
+Or download the DMG from [Releases](https://github.com/yeutterg/bookshelf-bar/releases), open it, and drag BookshelfBar to Applications. Releases are signed with a Developer ID and notarized by Apple.
+
+On first launch macOS asks for Local Network access, which BookshelfBar needs to find and control your speakers.
+
 ## Build
 
 ```sh
@@ -59,3 +69,18 @@ Request signing is adapted from [tkelkermans/KefSleepSync](https://github.com/tk
 ## License
 
 MIT
+
+## Releasing
+
+Push a tag like `v0.2.0`. The [release workflow](.github/workflows/release.yml) tests, builds a universal app, signs it, notarizes and staples the DMG, publishes a GitHub release, and updates the cask in [yeutterg/homebrew-tap](https://github.com/yeutterg/homebrew-tap). Repository secrets:
+
+| Secret | What |
+|---|---|
+| `DEVELOPER_ID_P12` | Developer ID Application certificate + private key, exported as .p12, base64-encoded |
+| `DEVELOPER_ID_P12_PASSWORD` | Password for that .p12 |
+| `NOTARY_KEY_P8` | App Store Connect API key (.p8 contents) for `notarytool` |
+| `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID` | That key's ID and issuer ID |
+| `HOMEBREW_TAP_TOKEN` | Fine-grained token with write access to `yeutterg/homebrew-tap` |
+
+Without the signing secrets the workflow still builds a DMG, but it isn't notarized. Locally: `VERSION=0.2.0 scripts/release.sh` (set `SIGN_IDENTITY` and the `NOTARY_*` variables to sign and notarize).
+

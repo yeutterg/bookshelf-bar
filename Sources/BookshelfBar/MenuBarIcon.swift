@@ -22,38 +22,54 @@ struct MenuBarGlyph: View {
 
     var body: some View {
         ZStack {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(.primary.opacity(filled ? 0.3 : 0.035))
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(.primary.opacity(outlineOpacity), lineWidth: 0.85)
+
             HStack(spacing: 2) {
-                MenuBarCabinet(leansLeft: false, emphasized: emphasized)
-                MenuBarCabinet(leansLeft: true, emphasized: emphasized)
+                MenuBarCabinet()
+                MenuBarCabinet()
             }
-            if state == .playing || state == .waking || state == .reconnecting {
-                MenuBarActivity()
-            }
+            .opacity(glyphOpacity)
+            .blendMode(filled ? .destinationOut : .normal)
+
             if state == .muted {
                 Capsule()
                     .fill(.primary)
-                    .frame(width: 1.5, height: 21)
+                    .frame(width: 1.25, height: 15)
                     .rotationEffect(.degrees(45))
+                    .blendMode(.destinationOut)
             }
         }
-        .frame(width: 21, height: 16)
-        .opacity(opacity)
+        .compositingGroup()
+        .frame(width: 22, height: 14)
+        .opacity(state == .offline ? 0.55 : 1)
         .environment(\.colorScheme, .light)   // .primary = black, as a template image expects
     }
 
-    private var emphasized: Bool {
+    /// Paper frame 06 has four treatments. Extra runtime states intentionally fold into the
+    /// closest one so the status item keeps the same visual language.
+    private var filled: Bool {
         switch state {
-        case .on, .playing, .waking: true
-        case .offline, .reconnecting, .standby, .muted: false
+        case .on, .playing, .muted: true
+        case .offline, .reconnecting, .standby, .waking: false
         }
     }
 
-    private var opacity: Double {
+    private var outlineOpacity: Double {
         switch state {
-        case .offline: 0.38
-        case .standby: 0.58
-        case .reconnecting: 0.7
-        case .waking, .on, .playing, .muted: 1
+        case .waking, .reconnecting: 0.55
+        case .standby, .offline: 0.13
+        case .on, .playing, .muted: 0
+        }
+    }
+
+    private var glyphOpacity: Double {
+        switch state {
+        case .waking, .reconnecting: 0.58
+        case .standby, .offline: 0.2
+        case .on, .playing, .muted: 0.72
         }
     }
 
@@ -83,48 +99,19 @@ struct MenuBarGlyph: View {
 }
 
 private struct MenuBarCabinet: View {
-    let leansLeft: Bool
-    let emphasized: Bool
-
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 2.25, style: .continuous)
-                .fill(.primary.opacity(emphasized ? 0.16 : 0.04))
-            RoundedRectangle(cornerRadius: 2.25, style: .continuous)
-                .stroke(.primary, lineWidth: emphasized ? 1.15 : 0.95)
-            Circle()
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
                 .stroke(.primary, lineWidth: 0.9)
-                .frame(width: 4.7, height: 4.7)
-                .offset(y: -1.2)
+            Circle()
+                .stroke(.primary, lineWidth: 0.75)
+                .frame(width: 3.1, height: 3.1)
+                .offset(y: -0.7)
             Circle()
                 .fill(.primary)
-                .frame(width: emphasized ? 1.8 : 1.35, height: emphasized ? 1.8 : 1.35)
-                .offset(y: -1.2)
-            Circle()
-                .fill(.primary.opacity(0.8))
                 .frame(width: 0.9, height: 0.9)
-                .offset(y: 4.6)
+                .offset(y: -0.7)
         }
-        .frame(width: 7.5, height: 14)
-        .rotationEffect(.degrees(leansLeft ? -2.5 : 2.5), anchor: .bottom)
-    }
-}
-
-/// Two soft rings next to the drivers for playing / waking. Static: it's rendered into the
-/// menu bar image.
-private struct MenuBarActivity: View {
-    var body: some View {
-        ZStack {
-            ring(x: -4.75)
-            ring(x: 4.75)
-        }
-    }
-
-    private func ring(x: CGFloat) -> some View {
-        Circle()
-            .stroke(.primary.opacity(0.45), lineWidth: 0.85)
-            .frame(width: 5.2, height: 5.2)
-            .scaleEffect(1.5)
-            .offset(x: x, y: -1.2)
+        .frame(width: 5, height: 9)
     }
 }

@@ -226,7 +226,7 @@ struct LocalNetworkPrompt: View {
 if let index = CommandLine.arguments.firstIndex(of: "--menubar-snapshot"), index + 1 < CommandLine.arguments.count {
     // Development aid: write the menu bar glyph for each state side by side.
     MainActor.assumeIsolated {
-        let states: [SpeakerState] = [.offline, .standby, .on, .playing, .muted]
+        let states: [SpeakerState] = [.standby, .waking, .playing, .muted]
         let images = states.map { MenuBarGlyph.image(for: $0) }
         let size = images[0].size
         let sheet = NSImage(size: NSSize(width: size.width * CGFloat(images.count) + 8 * CGFloat(images.count), height: size.height), flipped: false) { _ in
