@@ -40,6 +40,9 @@ public final class VolumeGuard: @unchecked Sendable {
         public var settleTimeout: Double = 3
         /// Hold low after the speaker reconnects. The speaker's output still settles for a few
         /// seconds after waking (heard as stutter with a 1.5 s hold), so stay low through that.
+        /// The KEF's USB volume moves in whole-dB steps, so an exact scalar can't always be
+        /// hit; anything within this distance of the hold level counts (≈1–2 dB).
+        public var holdTolerance: Float = 0.04
         public var holdFor: Double = 5
         /// Long, gentle S-curve back up to the user's volume.
         public var rampFor: Double = 4.5
@@ -98,14 +101,14 @@ public final class VolumeGuard: @unchecked Sendable {
             let start = Date()
             var stableSince: Date?
             var settled = false
+            var writable = false
+            let near: (Float?) -> Bool = { v in v.map { abs($0 - plan.hold) <= plan.holdTolerance } ?? false }
             while alive(), Date().timeIntervalSince(start) < plan.settleTimeout {
                 let muted = audio.isMuted(id)
                 let volume = audio.volume(id)
                 if muted != true { _ = audio.setMuted(id, true) }
-                if volume.map({ abs($0 - plan.hold) > 0.005 }) != false {
-                    _ = audio.setVolume(id, plan.hold)
-                }
-                if muted == true, let volume, abs(volume - plan.hold) <= 0.005 {
+                if !near(volume) { if audio.setVolume(id, plan.hold) { writable = true } } else { writable = true }
+                if muted == true, near(volume) {
                     if stableSince == nil { stableSince = Date() }
                     if Date().timeIntervalSince(stableSince!) >= plan.settleFor {
                         settled = true
@@ -117,17 +120,23 @@ public final class VolumeGuard: @unchecked Sendable {
                 Thread.sleep(forTimeInterval: 0.05)
             }
             guard alive() else { return done(false) }
-            guard settled else {
-                log("could not verify safe hold; leaving output muted")
-                _ = audio.setMuted(id, true)
-                return done(false)
+            if !settled {
+                // Only stay muted if we can't control the device at all. Silently leaving the
+                // user's output muted is worse than starting a step away from the hold level.
+                guard writable else {
+                    log("device rejects volume writes; leaving output muted")
+                    _ = audio.setMuted(id, true)
+                    return done(false)
+                }
+                _ = audio.setVolume(id, plan.hold)
+                log("hold not stable within \(plan.settleTimeout)s; continuing at hold")
             }
             log("settled at hold \(plan.hold) after \(String(format: "%.2f", Date().timeIntervalSince(start)))s")
 
             // 2. Hold low (audible, quiet) while the speaker finishes waking. Keep re-asserting.
             let holdEnd = Date().addingTimeInterval(plan.holdFor)
             while alive(), Date() < holdEnd {
-                if audio.volume(id).map({ abs($0 - plan.hold) > 0.005 }) != false {
+                if audio.volume(id).map({ abs($0 - plan.hold) > plan.holdTolerance }) != false {
                     _ = audio.setVolume(id, plan.hold)
                 }
                 let desiredMute = intent.snapshot.muted

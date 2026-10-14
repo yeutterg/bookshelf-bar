@@ -21,6 +21,25 @@ import Testing
         #expect(!audio.muteWrites.contains(false))
     }
 
+    /// The real KEF rounds to whole-dB steps, so the exact hold level is never read back.
+    /// The guard must accept the nearest step and finish unmuted at the target.
+    @Test func acceptsAQuantizedHoldLevel() async {
+        let audio = MockVolumeDevice(volume: 0.6, muted: false, step: 0.0125)
+        let guarder = VolumeGuard(audio: audio)
+        var plan = VolumeGuard.Plan(hold: 0.4067)
+        plan.settleFor = 0.05
+        plan.settleTimeout = 0.5
+        plan.holdFor = 0.02
+        plan.rampFor = 0.02
+
+        let completed = await run(guarder, audio: audio, plan: plan,
+                                  intent: VolumeIntent(target: 0.6267, muted: false))
+
+        #expect(completed)
+        #expect(audio.currentMuted == false)
+        #expect(abs((audio.currentVolume ?? 0) - 0.6267) < 0.0125)
+    }
+
     @Test func preservesAnInitiallyMutedUserIntent() async {
         let audio = MockVolumeDevice(volume: 0.1, muted: true)
         let guarder = VolumeGuard(audio: audio)
@@ -75,12 +94,14 @@ private final class MockVolumeDevice: VolumeDeviceIO, @unchecked Sendable {
     private var storedVolume: Float?
     private var storedMuted: Bool?
     private let acceptsWrites: Bool
+    private let step: Float?
     private var storedMuteWrites: [Bool] = []
 
-    init(volume: Float?, muted: Bool?, acceptsWrites: Bool = true) {
+    init(volume: Float?, muted: Bool?, acceptsWrites: Bool = true, step: Float? = nil) {
         storedVolume = volume
         storedMuted = muted
         self.acceptsWrites = acceptsWrites
+        self.step = step
     }
 
     var currentVolume: Float? { lock.withLock { storedVolume } }
@@ -92,7 +113,7 @@ private final class MockVolumeDevice: VolumeDeviceIO, @unchecked Sendable {
 
     func setVolume(_ id: AudioObjectID, _ scalar: Float) -> Bool {
         lock.withLock {
-            if acceptsWrites { storedVolume = scalar }
+            if acceptsWrites { storedVolume = step.map { (scalar / $0).rounded() * $0 } ?? scalar }
             return acceptsWrites
         }
     }
