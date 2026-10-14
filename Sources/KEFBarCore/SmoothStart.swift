@@ -4,6 +4,9 @@ import Foundation
 import KEFAudio
 import KEFKit
 import Observation
+import os
+
+private let slog = Logger(subsystem: "com.github.yeutterg.kefbar", category: "smoothstart")
 
 /// Prevents the loud start when a sleeping KEF begins playing over USB.
 ///
@@ -65,6 +68,7 @@ public final class SmoothStart {
         liveVolume = usb.volume
         if rememberedVolume == nil { rememberedVolume = usb.volume }
         observeSystem()
+        speaker.willChangePower = { [weak self] on in self?.prepareForPower(on: on) }
     }
 
     // MARK: Mac-side volume (what the macOS Sound control shows)
@@ -81,7 +85,7 @@ public final class SmoothStart {
     public func setMacVolume(_ v: Float) {
         rememberedVolume = v
         liveVolume = v
-        guard phase == .idle, let id = usb.device else { return }
+        guard phase == .idle, !armedLow, let id = usb.device else { return }
         AudioHardware.setVolume(id, v)
     }
 
@@ -94,31 +98,39 @@ public final class SmoothStart {
     // MARK: Events
 
     /// How far below the target to hold while the speaker wakes, in scalar units (about 20 dB
-    /// on the KEF's curve), and how long to hold and ramp.
+    /// on the KEF's curve).
     private let holdDrop: Float = 0.22
-    private let holdDuration: Duration = .milliseconds(1500)
-    private let rampDuration: Double = 2.0
+    private let volumeGuard = VolumeGuard()
+    /// The device has been set to the hold level on purpose (pre-armed); don't mistake that for
+    /// the user's choice, and ramp back up when the speaker returns.
+    private var armedLow = false
 
     private func handle(_ event: KEFUSBMonitor.Event) {
+        // No CoreAudio reads here: they can block on a device that's coming or going.
+        slog.info("event \(String(describing: event), privacy: .public) phase=\(String(describing: self.phase), privacy: .public) on=\(self.speaker.isOn) armed=\(self.armedLow)")
         switch event {
         case .removed:
             usbPresent = false
             usbRunning = false
             speaker.usbStreamActive = false
             restoreDefault = kefWasDefault
-            if enabled { phase = .waking }
+            // A drop while the speaker is on (or being turned on) is the wake re-enumeration.
+            // A drop because the user turned it off is just the USB powering down.
+            if enabled, speaker.isOn {
+                phase = .waking
+                startWakeWatchdog()
+            } else if phase == .waking {
+                phase = .idle
+            }
 
         case .arrived(let id):
             usbPresent = true
-            usbRunning = AudioHardware.isRunningSomewhere(id)
-            speaker.usbStreamActive = usbRunning
-            liveVolume = AudioHardware.volume(id)
             if enabled { guardArrival(id) } else { phase = .idle }
 
         case .defaultOutputChanged(let isKEF):
             // Ignore the fallback macOS does while the KEF is gone; we restore it on arrival.
             if usb.device != nil { kefWasDefault = isKEF }
-            if isKEF, enabled { Task { await speaker.wakeIfNeeded() } }
+            if isKEF, enabled, !speaker.isOn { prepareForPower(on: true) }
 
         case .runningChanged(let running):
             usbRunning = running
@@ -126,12 +138,11 @@ public final class SmoothStart {
             guard running, enabled, usb.isDefaultOutput else { break }
             // Audio is starting. If the speaker is asleep, drop the level right now, before it
             // wakes, and hold it until the wake and USB reconnect are over.
-            if !speaker.isOn, phase == .idle, let id = usb.device { beginHold(id) }
-            Task { await speaker.wakeIfNeeded() }
+            if !speaker.isOn, phase == .idle { prepareForPower(on: true) }
 
         case .volumeChanged(let v):
             // Track the user's choice, but not our own hold/ramp writes or re-arrival transients.
-            if Date() > ignoreVolumeUntil, phase == .idle {
+            if phase == .idle, !armedLow, Date() > ignoreVolumeUntil {
                 rememberedVolume = v
                 liveVolume = v
             }
@@ -141,63 +152,74 @@ public final class SmoothStart {
     private var target: Float { rememberedVolume ?? 0.5 }
     private var holdLevel: Float { max(target - holdDrop, 0) }
 
-    /// Called the moment audio starts on a sleeping speaker.
-    private func beginHold(_ id: AudioObjectID) {
-        phase = .waking
-        ignoreVolumeUntil = .distantFuture
-        AudioHardware.setVolume(id, holdLevel)
-        // Watchdog: if the speaker never drops off USB (already awake), release anyway.
-        guardTask?.cancel()
-        guardTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(10))
-            guard !Task.isCancelled, let self, self.phase == .waking, let id = self.usb.device else { return }
-            await self.ramp(id)
+    /// Called just before the speaker's power changes (KEF Bar's switch, a pre-wake, audio
+    /// starting on a sleeping speaker). Sets the KEF to the hold level *before* it drops off
+    /// USB: macOS restores the last level it saw when the device comes back, so it returns low
+    /// instead of at full volume.
+    func prepareForPower(on: Bool) {
+        guard enabled else { return }
+        if let id = usb.device {
+            slog.info("pre-arm hold \(self.holdLevel) (turning \(on ? "on" : "off", privacy: .public))")
+            armedLow = true
+            volumeGuard.setLevel(id, holdLevel)
+        }
+        if on {
+            phase = .waking
+            startWakeWatchdog()
+            Task { await speaker.wakeIfNeeded(notify: false) }
         }
     }
 
-    /// The KEF just re-appeared after waking: mute instantly (it can come back at 0 dB), put
-    /// back the default output, hold low, then ramp up.
+    /// Never stay in "waking" forever if the speaker doesn't come back on USB (e.g. it was
+    /// already awake, so there's no re-enumeration). Then just ramp up where it is.
+    private func startWakeWatchdog() {
+        guardTask?.cancel()
+        guardTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            guard !Task.isCancelled, let self, self.phase == .waking else { return }
+            slog.info("watchdog: no USB re-arrival")
+            if let id = self.usb.device { self.runGuard(id) } else { self.finish() }
+        }
+    }
+
+    /// The KEF just re-appeared after waking: mute and hold (it can come back at 0 dB, and
+    /// macOS re-applies its saved level a moment later), put back the default output, then ramp.
     private func guardArrival(_ id: AudioObjectID) {
-        phase = .settling
-        ignoreVolumeUntil = .distantFuture
-        AudioHardware.setMuted(id, true)
-        AudioHardware.setVolume(id, holdLevel)
+        guardTask?.cancel()
         if restoreDefault, !usb.isDefaultOutput { usb.makeDefaultOutput() }
         restoreDefault = false
+        runGuard(id)
+    }
 
-        guardTask?.cancel()
-        guardTask = Task { [weak self] in
-            guard let self else { return }
-            // macOS writes its saved volume shortly after arrival; keep re-asserting the hold level.
-            for _ in 0..<4 {
-                if let v = AudioHardware.volume(id), abs(v - self.holdLevel) > 0.005 { AudioHardware.setVolume(id, self.holdLevel) }
-                try? await Task.sleep(for: .milliseconds(100))
+    private func runGuard(_ id: AudioObjectID) {
+        phase = .settling
+        ignoreVolumeUntil = .distantFuture
+        let plan = VolumeGuard.Plan(hold: holdLevel, target: target)
+        slog.info("guard id=\(id) hold=\(plan.hold) target=\(plan.target)")
+        volumeGuard.run(id, plan, log: { slog.info("\($0, privacy: .public)") }) { [weak self] completed in
+            guard completed else { return }
+            Task { @MainActor in
+                self?.liveVolume = plan.target
+                self?.finish()
             }
-            guard !Task.isCancelled else { return }
-            AudioHardware.setMuted(id, false)
-            try? await Task.sleep(for: self.holdDuration)
-            guard !Task.isCancelled else { return }
-            await self.ramp(id)
         }
     }
 
-    /// Eases from the hold level to the target along an S-curve.
-    private func ramp(_ id: AudioObjectID) async {
-        let from = AudioHardware.volume(id) ?? holdLevel
-        let to = target
-        let steps = Int(rampDuration / 0.04)
-        for i in 1...steps {
-            if Task.isCancelled { return }
-            let t = Float(i) / Float(steps)
-            let eased = t * t * (3 - 2 * t)
-            AudioHardware.setVolume(id, from + (to - from) * eased)
-            try? await Task.sleep(for: .milliseconds(40))
-        }
-        AudioHardware.setMuted(id, false)
-        AudioHardware.setVolume(id, to)
-        liveVolume = to
+    private func finish() {
+        armedLow = false
         ignoreVolumeUntil = .now + 0.5
         phase = .idle
+        usbRunning = usb.isRunning
+        speaker.usbStreamActive = usbRunning
+    }
+
+    /// On quit, don't leave the KEF parked at the hold level.
+    public func prepareForQuit() {
+        volumeGuard.cancel()
+        if armedLow || phase != .idle, let id = usb.device, let v = rememberedVolume {
+            AudioHardware.setVolume(id, v)
+            AudioHardware.setMuted(id, false)
+        }
     }
 
     // MARK: System triggers
@@ -216,7 +238,7 @@ public final class SmoothStart {
     }
 
     private func preWakeForUser() {
-        guard enabled, wakeOnUnlock, usb.isDefaultOutput else { return }
-        Task { await speaker.wakeIfNeeded() }
+        guard enabled, wakeOnUnlock, usb.isDefaultOutput, !speaker.isOn else { return }
+        prepareForPower(on: true)
     }
 }

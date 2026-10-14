@@ -220,8 +220,15 @@ public final class SpeakerModel {
     }
 
     public func togglePower() {
-        if isOn { turnOff() } else { setSource(.usb) }
+        if isOn { turnOff() } else {
+            willChangePower?(true)
+            setSource(.usb)
+        }
     }
+
+    /// Set by Smooth Start: called right before KEF Bar changes the speaker's power, so the USB
+    /// volume can be parked low before the speaker drops off USB.
+    public var willChangePower: ((_ on: Bool) -> Void)?
 
     /// Set by Smooth Start: some app on this Mac has an audio stream open to the KEF.
     public var usbStreamActive = false
@@ -235,6 +242,7 @@ public final class SpeakerModel {
     /// USB interface until its next wake, so Mac audio can't wake it. That's why this is limited
     /// to the stream-held case, where it would otherwise never stay off at all.
     public func turnOff() {
+        willChangePower?(false)
         status = .standby
         source = .standby
         guard let client else { return }
@@ -269,12 +277,16 @@ public final class SpeakerModel {
         (try? await client?.get(.standbyMode).string).flatMap(StandbyMode.init)
     }
 
-    /// Wakes the speaker into `source` only if it's currently in standby. Used by Smooth Start.
-    public func wakeIfNeeded(into s: PhysicalSource = .usb) async {
+    /// Wakes the speaker into `source` only if it's currently in standby. `notify: false` is
+    /// for callers that already prepared (Smooth Start itself).
+    public func wakeIfNeeded(into s: PhysicalSource = .usb, notify: Bool = true) async {
         guard client != nil else { return }
         if let live = try? await client?.status() { status = live }
         guard status == .standby else { return }
-        setSource(s)
+        if notify { willChangePower?(true) }
+        source = s
+        status = .powerOn
+        await perform { try await $0.setSource(s) }
         updateEventStream(force: true)
     }
 

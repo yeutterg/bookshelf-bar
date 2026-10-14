@@ -71,8 +71,10 @@ public final class KEFUSBMonitor {
         guard now != device else { return }
         detachDeviceListeners()
         device = now
-        attachDeviceListeners()
+        // Report first: listener setup touches the new device, which can block while it initializes,
+        // and the arrival guard must start immediately.
         onEvent?(now.map { .arrived($0) } ?? .removed)
+        attachDeviceListeners()
     }
 
     private func addSystemListener(_ selector: AudioObjectPropertySelector, _ handler: @escaping @MainActor () -> Void) {

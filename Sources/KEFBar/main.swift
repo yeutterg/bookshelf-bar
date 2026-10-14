@@ -14,6 +14,25 @@ final class AppState {
         speaker.start()
         smoothStart.start()
         keepAwake.start()
+        listenForCommands()
+    }
+
+    /// Local automation hook (Shortcuts, scripts, tests): post the distributed notification
+    /// `com.github.yeutterg.kefbar.power` with object "on", "off" or "toggle". Goes through the same
+    /// code path as the power switch, including Smooth Start.
+    private func listenForCommands() {
+        DistributedNotificationCenter.default().addObserver(
+            forName: .init("com.github.yeutterg.kefbar.power"), object: nil, queue: .main) { note in
+            let command = note.object as? String
+            MainActor.assumeIsolated {
+                let speaker = AppState.shared.speaker
+                switch command {
+                case "on": if !speaker.isOn { speaker.togglePower() }
+                case "off": if speaker.isOn { speaker.togglePower() }
+                default: speaker.togglePower()
+                }
+            }
+        }
     }
 }
 
@@ -41,6 +60,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // `--preview` shows the popover content in a normal window, for screenshots and development.
             if CommandLine.arguments.contains("--preview") { showPreview() }
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated { AppState.shared.smoothStart.prepareForQuit() }
     }
 
     @MainActor private func showPreview() {
