@@ -43,9 +43,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor private func showPreview() {
         let state = AppState.shared
-        let host = NSHostingView(rootView: RootView(speaker: state.speaker, smoothStart: state.smoothStart)
-            .padding(12)
-            .background(.ultraThinMaterial))
+        // `--page sound|about|setup` opens the preview on a specific page.
+        let page = CommandLine.arguments.firstIndex(of: "--page").flatMap { i in
+            i + 1 < CommandLine.arguments.count ? Page(rawValue: CommandLine.arguments[i + 1]) : nil
+        } ?? .main
+        let host = NSHostingView(rootView: RootView(speaker: state.speaker, smoothStart: state.smoothStart, page: page))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 364, height: 600),
                               styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
         window.titlebarAppearsTransparent = true

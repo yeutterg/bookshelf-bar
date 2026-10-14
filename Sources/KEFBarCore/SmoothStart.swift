@@ -28,6 +28,9 @@ public final class SmoothStart {
     public private(set) var phase: Phase = .idle
     /// True while the KEF USB device is connected to this Mac.
     public private(set) var usbPresent = false
+    /// Product name of the connected KEF USB device (e.g. "LSX II LT"), used to point out the
+    /// matching pair during setup. USB exposes no serial number, so model is all we can match on.
+    public var usbDeviceName: String? { usbPresent ? usb.name : nil }
     /// True while some app is playing to the KEF USB device.
     public private(set) var usbRunning = false
 

@@ -2,74 +2,126 @@ import KEFBarCore
 import KEFKit
 import SwiftUI
 
-enum Page { case main, sound, about }
+enum Page: String { case main, sound, about, setup }
 
-/// The popover. Pages slide horizontally like a Control Center module drill-down.
+/// The menu bar window. Each page is a grouped `Form`, the same structure System Settings and
+/// the built-in menu extras use; pages swap with a native push transition.
 struct RootView: View {
     let speaker: SpeakerModel
     let smoothStart: SmoothStart
-    @State private var page: Page = .main
+    @State var page: Page = .main
 
     var body: some View {
-        GlassEffectContainer(spacing: 10) {
+        VStack(spacing: 0) {
             Group {
-                switch page {
-                case .main:
-                    MainPage(speaker: speaker, smoothStart: smoothStart) { page = .sound }
-                        .transition(.push(from: .leading))
-                case .sound:
-                    SoundPowerPage(speaker: speaker, back: { page = .main }, about: { page = .about })
-                        .transition(.push(from: .trailing))
-                case .about:
-                    AboutPage(speaker: speaker) { page = .sound }
-                        .transition(.push(from: .trailing))
+                if speaker.needsSetup || page == .setup {
+                    SetupPage(speaker: speaker, smoothStart: smoothStart)
+                } else {
+                    pageView
                 }
             }
             .animation(.smooth(duration: 0.3), value: page)
+            .animation(.smooth(duration: 0.3), value: speaker.needsSetup)
+            QuitFooter()
         }
-        .padding(10)
-        .frame(width: 340)
+        .frame(width: 320)
         .onAppear { speaker.popoverVisible = true }
         .onDisappear {
             speaker.popoverVisible = false
             page = .main
         }
     }
-}
 
-/// A rounded glass platter, the building block of every page.
-struct Module<Content: View>: View {
-    var padding: EdgeInsets = EdgeInsets(top: 12, leading: 14, bottom: 14, trailing: 14)
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        content
-            .padding(padding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .glassEffect(.regular, in: .rect(cornerRadius: 20))
+    @ViewBuilder private var pageView: some View {
+        switch page {
+            case .main:
+                MainPage(speaker: speaker, smoothStart: smoothStart) { page = .sound }
+                    .transition(.push(from: .leading))
+            case .sound:
+                SoundPowerPage(speaker: speaker, back: { page = .main }, about: { page = .about })
+                    .transition(.push(from: .trailing))
+            case .about:
+                AboutPage(speaker: speaker, back: { page = .sound }, changeSpeakers: {
+                    page = .main
+                    speaker.forget()
+                })
+                    .transition(.push(from: .trailing))
+            case .setup:
+                EmptyView()
+        }
     }
 }
 
-/// Back chevron plus title, used by the drill-down pages.
+/// Bottom bar on every page, like the last item of a menu extra.
+struct QuitFooter: View {
+    var body: some View {
+        HStack {
+            Text("KEF Bar \(Bundle.main.appVersion)").font(.caption).foregroundStyle(.tertiary)
+            Spacer()
+            Button("Quit KEF Bar") { NSApp.terminate(nil) }
+                .buttonStyle(.borderless)
+                .keyboardShortcut("q")
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 12)
+        .padding(.top, 2)
+    }
+}
+
+/// A grouped form that sizes itself to its content, so the menu bar window fits each page.
+struct PageForm<Content: View>: View {
+    @ViewBuilder var content: Content
+    @State private var height: CGFloat = 200
+
+    var body: some View {
+        Form { content }
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .scrollDisabled(true)
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height } action: { _, new in
+                if new > 0 { height = new }
+            }
+            .frame(height: height)
+    }
+}
+
+/// Back button and title for drill-down pages.
 struct PageHeader: View {
     let title: String
-    var subtitle: String?
     let back: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack {
             Button(action: back) {
-                PaperIcon("icon-chevron-left").frame(width: 30, height: 30)
+                Label("Back", systemImage: "chevron.backward")
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(title).font(.system(size: 15, weight: .semibold))
-                if let subtitle { Text(subtitle).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary) }
-            }
+            .buttonStyle(.borderless)
+            .labelStyle(.iconOnly)
+            .controlSize(.large)
+            .help("Back")
+            Text(title).font(.headline)
             Spacer()
         }
-        .padding(.horizontal, 4)
-        .padding(.top, 2)
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+    }
+}
+
+/// A form row that behaves like a navigation link.
+struct DisclosureRow: View {
+    let title: String
+    var systemImage: String?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                if let systemImage { Label(title, systemImage: systemImage) } else { Text(title) }
+                Spacer()
+                Image(systemName: "chevron.forward").foregroundStyle(.tertiary).imageScale(.small)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

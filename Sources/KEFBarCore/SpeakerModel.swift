@@ -61,8 +61,13 @@ public final class SpeakerModel {
 
     // MARK: Lifecycle
 
+    /// No speaker has been chosen yet: the UI shows the setup step instead of controls.
+    public private(set) var needsSetup = true
+
     public func start() {
         guard discoveryTask == nil else { return }
+        let savedId = defaults.string(forKey: Self.savedSpeakerKey)
+        needsSetup = savedId == nil && defaults.string(forKey: Self.savedHostKey) == nil
         if let manual = defaults.string(forKey: Self.savedHostKey) {
             Task { await connect(host: manual) }
         }
@@ -70,17 +75,58 @@ public final class SpeakerModel {
             for await list in KEFDiscovery().speakers() {
                 guard let self else { return }
                 self.speakers = list
-                if self.info == nil || !list.contains(where: { $0.kefId == self.info?.kefId }) {
-                    let saved = self.defaults.string(forKey: Self.savedSpeakerKey)
-                    if let pick = list.first(where: { $0.kefId == saved }) ?? list.first, self.host == nil || self.info != nil {
-                        await self.select(pick)
-                    }
+                // Reconnect only to the speaker the user chose; never pick one on our own.
+                if self.info == nil, let saved = self.defaults.string(forKey: Self.savedSpeakerKey),
+                   let match = list.first(where: { $0.kefId == saved }) {
+                    await self.select(match)
                 }
             }
         }
     }
 
-    public func select(_ speaker: KEFSpeakerInfo) async {
+    /// Setup: remember `speaker` (by its permanent kefId) and connect to it.
+    public func pair(_ speaker: KEFSpeakerInfo) async {
+        defaults.removeObject(forKey: Self.savedHostKey)
+        needsSetup = false
+        await select(speaker)
+    }
+
+    /// Back to the setup step, e.g. to switch to another pair.
+    public func forget() {
+        eventTask?.cancel()
+        eventTask = nil
+        defaults.removeObject(forKey: Self.savedSpeakerKey)
+        defaults.removeObject(forKey: Self.savedHostKey)
+        client = nil
+        info = nil
+        host = nil
+        connection = .searching
+        needsSetup = true
+    }
+
+    /// Makes a pair identifiable during setup: wakes it for a few seconds (relays click, the
+    /// status light comes on), then restores its previous state. Speakers that are already on
+    /// get a brief mute instead.
+    public func identify(_ speaker: KEFSpeakerInfo) async {
+        guard let host = try? await KEFDiscovery.resolveHost(for: speaker) else { return }
+        let c = KEFClient(host: host)
+        guard let status = try? await c.status() else { return }
+        if status == .standby {
+            try? await c.setSource(.powerOn)
+            try? await Task.sleep(for: .seconds(5))
+            try? await c.setSource(.standby)
+        } else {
+            let wasMuted = (try? await c.isMuted()) ?? false
+            for _ in 0..<2 {
+                try? await c.setMuted(!wasMuted)
+                try? await Task.sleep(for: .milliseconds(500))
+                try? await c.setMuted(wasMuted)
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+    }
+
+    func select(_ speaker: KEFSpeakerInfo) async {
         info = speaker
         defaults.set(speaker.kefId, forKey: Self.savedSpeakerKey)
         connection = .connecting(speaker.name)
@@ -95,7 +141,10 @@ public final class SpeakerModel {
 
     /// Manual fallback when Bonjour is blocked (guest networks, VLANs).
     public func connect(host: String, remember: Bool = false) async {
-        if remember { defaults.set(host, forKey: Self.savedHostKey) }
+        if remember {
+            defaults.set(host, forKey: Self.savedHostKey)
+            needsSetup = false
+        }
         self.host = host
         client = KEFClient(host: host, password: SpeakerPassword.load(for: info?.kefId) ?? "")
         connection = .connecting(info?.name ?? host)

@@ -6,43 +6,37 @@ import SwiftUI
 struct AboutPage: View {
     let speaker: SpeakerModel
     let back: () -> Void
+    let changeSpeakers: () -> Void
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 0) {
             PageHeader(title: "About", back: back)
-            Module(padding: EdgeInsets(top: 2, leading: 14, bottom: 2, trailing: 8)) {
-                VStack(spacing: 0) {
-                    let rows = self.rows
-                    ForEach(Array(rows.enumerated()), id: \.offset) { i, row in
-                        CopyableRow(title: row.0, value: row.1)
-                        if i < rows.count - 1 { Divider().opacity(0.5) }
-                    }
+            PageForm {
+                Section {
+                    ForEach(rows, id: \.0) { CopyableRow(title: $0.0, value: $0.1) }
+                } footer: {
+                    Text("Click a value to copy it.").font(.caption).foregroundStyle(.secondary)
+                }
+                Section {
+                    DisclosureRow(title: "Change Speakers…", systemImage: "arrow.left.arrow.right", action: changeSpeakers)
                 }
             }
-            HStack {
-                Text("KEF Bar \(Bundle.main.appVersion)").font(.system(size: 11)).foregroundStyle(.tertiary)
-                Spacer()
-                Button("Quit KEF Bar") { NSApp.terminate(nil) }
-                    .buttonStyle(.glass)
-                    .controlSize(.small)
-            }
-            .padding(.horizontal, 6)
         }
     }
 
     private var rows: [(String, String)] {
-        guard let info = speaker.info else { return [("Network", speaker.host ?? "—")] }
-        var rows = [("Name", info.name), ("Model", info.modelName),
-                    ("Primary serial", info.serialNumber)]
-        if !info.serialNumberSecondary.isEmpty { rows.append(("Secondary serial", info.serialNumberSecondary)) }
+        guard let info = speaker.info else { return [("IP Address", speaker.host ?? "—")] }
+        var rows = [("Name", info.name), ("Model", info.modelName), ("Primary Serial", info.serialNumber)]
+        if !info.serialNumberSecondary.isEmpty { rows.append(("Secondary Serial", info.serialNumberSecondary)) }
         rows.append(("Firmware", info.firmware.components(separatedBy: ".0x").first ?? info.firmware))
-        if let host = speaker.host { rows.append(("IP address", host)) }
-        if !info.mac.isEmpty { rows.append(("MAC address", info.mac)) }
+        if let host = speaker.host { rows.append(("IP Address", host)) }
+        if !info.mac.isEmpty { rows.append(("MAC Address", info.mac)) }
         return rows
     }
 }
 
-/// A label/value row. Hovering reveals a copy button; clicking anywhere on the row copies the value.
+/// `LabeledContent` row whose value can be copied: a copy button appears on hover, clicking the
+/// row copies, and there's a Copy item in the context menu.
 struct CopyableRow: View {
     let title: String
     let value: String
@@ -50,29 +44,28 @@ struct CopyableRow: View {
     @State private var copied = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text(title).font(.system(size: 13, weight: .medium))
-            Spacer(minLength: 12)
-            Text(value)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-            Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(copied ? Color.green : .secondary)
-                .frame(width: 22, height: 22)
-                .glassEffect(.regular.interactive(), in: .circle)
+        LabeledContent(title) {
+            HStack(spacing: 6) {
+                Text(value)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                Button(action: copy) {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .contentTransition(.symbolEffect(.replace))
+                        .foregroundStyle(copied ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+                        .frame(width: 16)
+                }
+                .buttonStyle(.borderless)
+                .help("Copy \(title)")
                 .opacity(hovering || copied ? 1 : 0)
-                .help("Copy \(title.lowercased())")
+            }
         }
-        .frame(height: 40)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .onTapGesture { copy() }
+        .onTapGesture(perform: copy)
+        .contextMenu { Button("Copy \(title)", action: copy) }
         .animation(.easeOut(duration: 0.15), value: hovering)
-        .accessibilityAction(named: "Copy") { copy() }
     }
 
     private func copy() {

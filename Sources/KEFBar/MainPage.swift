@@ -8,24 +8,30 @@ struct MainPage: View {
     let openSettings: () -> Void
 
     var body: some View {
-        VStack(spacing: 10) {
-            HeroModule(speaker: speaker, smoothStart: smoothStart)
+        PageForm {
+            Section {
+                HeaderRow(speaker: speaker, smoothStart: smoothStart)
+                SpeakerArtwork(modelName: speaker.info?.modelName ?? "", state: speaker.visualState(smoothStart))
+                    .frame(height: 140)
+                    .frame(maxWidth: .infinity)
+            }
+
             switch speaker.connection {
             case .connected:
-                VolumeModule(speaker: speaker)
-                InputsModule(speaker: speaker)
-                SmoothStartModule(smoothStart: smoothStart)
-                SettingsLink(title: "Sound & Power Settings…", action: openSettings)
+                Section("Volume") { VolumeRow(speaker: speaker) }
+                Section("Input") { InputRows(speaker: speaker) }
+                Section { SmoothStartRow(smoothStart: smoothStart) }
+                Section { DisclosureRow(title: "Sound & Power", systemImage: "slider.horizontal.3", action: openSettings) }
+            case .unreachable:
+                Section { ManualConnectRows(speaker: speaker) }
             case .searching, .connecting:
                 EmptyView()
-            case .unreachable(let reason):
-                ManualConnectModule(speaker: speaker, reason: reason)
             }
         }
     }
 }
 
-// MARK: Hero
+// MARK: Header and artwork
 
 enum SpeakerState { case offline, standby, waking, playing, muted }
 
@@ -39,101 +45,79 @@ extension SpeakerModel {
     }
 }
 
-struct HeroModule: View {
+/// Name and status with a power switch, like the Wi‑Fi and Bluetooth menu extras.
+struct HeaderRow: View {
     let speaker: SpeakerModel
     let smoothStart: SmoothStart
 
     var body: some View {
-        let state = speaker.visualState(smoothStart)
-        ZStack(alignment: .topTrailing) {
-            SpeakerArtwork(finish: speaker.finish, modelName: speaker.info?.modelName ?? "", state: state)
-                .frame(width: 304 * 0.88)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            if speaker.connection == .connected {
-                Button { speaker.togglePower() } label: {
-                    PaperIcon("icon-power").frame(width: 32, height: 32)
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .help(speaker.isOn ? "Turn off" : "Turn on")
-                .padding(10)
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(speaker.info?.name ?? "KEF Speakers").font(.headline)
+                Text(status).font(.subheadline).foregroundStyle(.secondary)
             }
-
-            if let caption = caption(state) {
-                Text(caption)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .padding(14)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            Spacer()
+            if speaker.connection == .connected {
+                Toggle("Power", isOn: Binding(get: { speaker.isOn }, set: { _ in speaker.togglePower() }))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            } else if case .unreachable = speaker.connection {
+                EmptyView()
+            } else {
+                ProgressView().controlSize(.small)
             }
         }
-        .frame(height: 220)
-        .glassEffect(.regular, in: .rect(cornerRadius: 20))
     }
 
-    private func caption(_ state: SpeakerState) -> String? {
+    private var status: String {
         switch speaker.connection {
-        case .searching: "Looking for speakers…"
-        case .connecting(let name): "Connecting to \(name)…"
-        case .unreachable: "Can't reach the speakers"
-        case .connected: state == .waking ? "Waking…" : nil
+        case .searching: return "Looking for speakers…"
+        case .connecting: return "Connecting…"
+        case .unreachable: return "Not found"
+        case .connected:
+            if smoothStart.phase != .idle { return "Waking…" }
+            guard speaker.isOn else { return "Standby" }
+            return speaker.muted ? "\(speaker.source.label) · Muted" : speaker.source.label
         }
     }
 }
 
-/// The rendered speaker pair, styled per state.
+/// The rendered speaker pair: dimmed in standby, pulsing while waking, full colour when on.
 struct SpeakerArtwork: View {
-    let finish: KEFFinish
     let modelName: String
     let state: SpeakerState
     @State private var pulse = false
 
-    private var imageName: String {
-        switch (modelName, finish.artwork) {
-        case ("LSX II", _): "speakers-lsxii-green"
-        default: "speakers-graphite-grey"
-        }
-    }
-
     var body: some View {
         ZStack {
-            if state == .playing {
-                // Soft floor light under the pair.
-                Ellipse()
-                    .fill(Color(red: 1, green: 0.8, blue: 0.6).opacity(0.45))
-                    .frame(width: 180, height: 26)
-                    .blur(radius: 14)
-                    .offset(y: 62)
-            }
             image
                 .resizable()
                 .scaledToFit()
-                .saturation(state == .standby || state == .offline ? 0.35 : state == .muted ? 0.7 : 1)
-                .brightness(state == .standby || state == .offline ? -0.22 : state == .waking ? -0.12 : 0)
-                .shadow(color: .black.opacity(0.35), radius: 7, y: 10)
+                .saturation(state == .standby || state == .offline ? 0.35 : 1)
+                .brightness(state == .standby || state == .offline ? -0.2 : 0)
+                .shadow(color: .black.opacity(0.3), radius: 8, y: 8)
+                .opacity(state == .waking && pulse ? 0.55 : 1)
             if state == .muted {
                 Image(systemName: "speaker.slash.fill")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 44, height: 44)
-                    .glassEffect(.regular, in: .circle)
+                    .font(.title3)
+                    .padding(10)
+                    .background(.regularMaterial, in: Circle())
             }
         }
-        .overlay {
-            if state == .waking {
-                RoundedRectangle(cornerRadius: 18)
-                    .strokeBorder(Color.orange.opacity(pulse ? 0.9 : 0.35), lineWidth: 1.5)
-                    .shadow(color: .orange.opacity(pulse ? 0.6 : 0.2), radius: 12)
-                    .padding(-8)
-                    .onAppear { withAnimation(.easeInOut(duration: 0.6).repeatForever()) { pulse = true } }
-                    .onDisappear { pulse = false }
+        .animation(.smooth, value: state)
+        .onChange(of: state, initial: true) { _, new in
+            if new == .waking {
+                withAnimation(.easeInOut(duration: 0.8).repeatForever()) { pulse = true }
+            } else {
+                withAnimation(.smooth) { pulse = false }
             }
         }
-        .animation(.smooth(duration: 0.4), value: state)
+        .accessibilityHidden(true)
     }
 
     private var image: Image {
-        if let url = Bundle.module.url(forResource: imageName, withExtension: "png"), let ns = NSImage(contentsOf: url) {
+        let name = modelName == "LSX II" ? "speakers-lsxii-green" : "speakers-graphite-grey"
+        if let url = Bundle.module.url(forResource: name, withExtension: "png"), let ns = NSImage(contentsOf: url) {
             return Image(nsImage: ns)
         }
         return Image(systemName: "hifispeaker.2")
@@ -142,110 +126,51 @@ struct SpeakerArtwork: View {
 
 // MARK: Volume
 
-struct VolumeModule: View {
+struct VolumeRow: View {
     let speaker: SpeakerModel
 
     var body: some View {
-        Module {
-            VStack(alignment: .leading, spacing: 10) {
+        HStack(spacing: 8) {
+            Button(action: speaker.toggleMute) {
+                Image(systemName: speaker.muted ? "speaker.slash.fill" : "speaker.fill")
+                    .contentTransition(.symbolEffect(.replace))
+                    .frame(width: 18)
+            }
+            .buttonStyle(.borderless)
+            .help(speaker.muted ? "Unmute" : "Mute")
+            Slider(value: Binding(get: { Double(speaker.volume) }, set: { speaker.setVolume(Int($0.rounded())) }),
+                   in: 0...100) { Text("Volume") }
+                .labelsHidden()
+            Text("\(speaker.volume)")
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 26, alignment: .trailing)
+        }
+        .disabled(!speaker.isOn)
+    }
+}
+
+// MARK: Input
+
+/// One row per physical input with a checkmark on the active one, like the output list in the
+/// Sound menu extra.
+struct InputRows: View {
+    let speaker: SpeakerModel
+
+    var body: some View {
+        ForEach(PhysicalSource.inputs(forModel: speaker.info?.modelName ?? "LSX II LT"), id: \.self) { input in
+            let selected = speaker.isOn && speaker.source == input
+            Button { speaker.setSource(input) } label: {
                 HStack {
-                    Text("Volume").font(.system(size: 13, weight: .semibold))
+                    Label(input.label, systemImage: input.symbol)
+                        .symbolVariant(selected ? .fill : .none)
                     Spacer()
-                    Text(speaker.muted ? "Muted" : "\(speaker.volume)")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+                    if selected { Image(systemName: "checkmark").foregroundStyle(.tint).fontWeight(.semibold) }
                 }
-                CapsuleSlider(value: Binding(get: { Double(speaker.volume) / 100 },
-                                             set: { speaker.setVolume(Int(($0 * 100).rounded())) }),
-                              muted: speaker.muted,
-                              onIconTap: speaker.toggleMute)
+                .contentShape(Rectangle())
             }
-        }
-    }
-}
-
-/// Control Center–style thick slider with the speaker glyph inside; tap the glyph to mute.
-struct CapsuleSlider: View {
-    @Binding var value: Double
-    var muted: Bool
-    var onIconTap: () -> Void
-
-    var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width
-            ZStack(alignment: .leading) {
-                Capsule().fill(.black.opacity(0.18))
-                Capsule()
-                    .fill(.white.opacity(muted ? 0.45 : 0.94))
-                    .frame(width: max(28, w * value))
-                PaperIcon(muted ? "icon-volume-muted" : "icon-volume")
-                    .foregroundStyle(Color(red: 0.227, green: 0.227, blue: 0.251))
-                    .frame(width: 36, height: 28)
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: onIconTap)
-            }
-            .contentShape(Capsule())
-            .gesture(DragGesture(minimumDistance: 0).onChanged { g in
-                guard g.startLocation.x > 28 || abs(g.translation.width) > 2 else { return }
-                value = min(max(g.location.x / w, 0), 1)
-            })
-        }
-        .frame(height: 28)
-        .accessibilityElement()
-        .accessibilityLabel("Volume")
-        .accessibilityValue("\(Int(value * 100))")
-        .accessibilityAdjustableAction { dir in
-            value = min(max(value + (dir == .increment ? 0.02 : -0.02), 0), 1)
-        }
-    }
-}
-
-// MARK: Inputs
-
-struct InputsModule: View {
-    let speaker: SpeakerModel
-
-    var body: some View {
-        let inputs = PhysicalSource.inputs(forModel: speaker.info?.modelName ?? "LSX II LT")
-        Module(padding: EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Input").font(.system(size: 13, weight: .semibold)).padding(.horizontal, 4)
-                HStack(spacing: 0) {
-                    ForEach(Array(inputs.enumerated()), id: \.element) { i, input in
-                        if i > 0 { Spacer(minLength: 0) }
-                        InputButton(input: input, compact: inputs.count > 5,
-                                    selected: speaker.isOn && speaker.source == input) {
-                            speaker.setSource(input)
-                        }
-                        .frame(width: inputs.count > 5 ? 46 : 56)
-                    }
-                }
-            }
-        }
-    }
-}
-
-struct InputButton: View {
-    let input: PhysicalSource
-    let compact: Bool
-    let selected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Button(action: action) {
-                PaperIcon(input.icon)
-                    .frame(width: compact ? 38 : 42, height: compact ? 38 : 42)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .tint(selected ? .accentColor : nil)
-            .glassEffect(selected ? .regular.tint(.accentColor) : .regular, in: .circle)
-            Text(compact ? input.shortLabel : input.label)
-                .font(.system(size: 11, weight: selected ? .semibold : .medium))
-                .foregroundStyle(selected ? .primary : .secondary)
-                .lineLimit(1)
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(selected ? .isSelected : [])
         }
     }
 }
@@ -255,48 +180,45 @@ extension PhysicalSource {
         switch self {
         case .wifi: "Wi‑Fi"
         case .bluetooth: "Bluetooth"
-        case .tv: "TV"
+        case .tv: "TV (HDMI eARC)"
         case .optical: "Optical"
         case .usb: "USB‑C"
         case .analog: "AUX"
         case .coaxial: "Coaxial"
-        case .standby: "Off"
+        case .standby: "Standby"
         case .powerOn: "On"
         }
     }
-    var shortLabel: String { self == .bluetooth ? "BT" : label }
-    var icon: String {
+
+    var symbol: String {
         switch self {
-        case .wifi: "icon-wifi"
-        case .bluetooth: "icon-bluetooth"
-        case .tv: "icon-tv"
-        case .optical: "icon-optical"
-        case .usb: "icon-usb"
-        case .analog, .coaxial: "icon-aux"
-        case .standby, .powerOn: "icon-power"
+        case .wifi: "wifi"
+        case .bluetooth: "dot.radiowaves.left.and.right"
+        case .tv: "tv"
+        case .optical: "smallcircle.filled.circle"
+        case .usb: "cable.connector.horizontal"
+        case .analog: "headphones"
+        case .coaxial: "cable.coaxial"
+        case .standby, .powerOn: "power"
         }
     }
 }
 
 // MARK: Smooth Start
 
-struct SmoothStartModule: View {
+struct SmoothStartRow: View {
     @Bindable var smoothStart: SmoothStart
 
     var body: some View {
-        Module(padding: EdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 12)) {
-            HStack(spacing: 12) {
-                PaperIcon("icon-ramp")
-                    .frame(width: 32, height: 32)
-                    .glassEffect(.regular, in: .circle)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Smooth Start").font(.system(size: 13, weight: .semibold))
-                    Text(subtitle).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Toggle("Smooth Start", isOn: $smoothStart.enabled).labelsHidden().toggleStyle(.switch)
+        Toggle(isOn: $smoothStart.enabled) {
+            Label {
+                Text("Smooth Start")
+                Text(subtitle)
+            } icon: {
+                Image(systemName: "point.bottomleft.forward.to.point.topright.scurvepath")
             }
         }
+        .toggleStyle(.switch)
     }
 
     private var subtitle: String {
@@ -309,45 +231,23 @@ struct SmoothStartModule: View {
     }
 }
 
-struct SettingsLink: View {
-    let title: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack {
-                Text(title).font(.system(size: 13, weight: .medium))
-                Spacer()
-                PaperIcon("icon-chevron-right").foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
 // MARK: Manual connect
 
-struct ManualConnectModule: View {
+struct ManualConnectRows: View {
     let speaker: SpeakerModel
-    let reason: String
     @State private var host = ""
 
     var body: some View {
-        Module {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Speakers not found").font(.system(size: 13, weight: .semibold))
-                Text("Make sure they're on the same network as this Mac (guest networks block discovery), or enter their IP address.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                HStack {
-                    TextField("192.168.1.20", text: $host).textFieldStyle(.roundedBorder)
-                    Button("Connect") { Task { await speaker.connect(host: host, remember: true) } }
-                        .buttonStyle(.glassProminent)
-                        .disabled(host.isEmpty)
-                }
-            }
-        }
+        Text("Make sure the speakers are on the same network as this Mac. Guest networks can block discovery.")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+        TextField("IP address", text: $host, prompt: Text("192.168.1.20"))
+            .onSubmit(connect)
+        Button("Connect", action: connect)
+            .disabled(host.isEmpty)
+    }
+
+    private func connect() {
+        Task { await speaker.connect(host: host, remember: true) }
     }
 }
