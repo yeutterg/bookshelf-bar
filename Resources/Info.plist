@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>KEF Bar</string>
+	<key>CFBundleDisplayName</key>
+	<string>KEF Bar</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.github.yeutterg.kefbar</string>
+	<key>CFBundleExecutable</key>
+	<string>KEFBar</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>KEF Bar finds and controls your KEF speakers on your local network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_kef-info._tcp</string>
+		<string>_http._tcp</string>
+	</array>
+	<key>NSHumanReadableCopyright</key>
+	<string>MIT License. Not affiliated with KEF.</string>
+</dict>
+</plist>
