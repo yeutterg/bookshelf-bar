@@ -4,6 +4,8 @@ A native macOS menu bar app for KEF wireless speakers (LSX II LT, LSX II and the
 
 - **Control:** power, input, volume and mute, plus desk/wall mode, bass extension, treble, balance, auto-standby, wake source and maximum volume.
 - **Smooth Start:** wakes the speakers before audio plays, guards the moment the speaker reconnects over USB, and fades back in. It also puts macOS output back on the KEF if macOS switched away while the speaker was reconnecting.
+- **Keep Awake With Screen:** optional. The speakers stay on while the Mac's screen is on and go to standby when it turns off, if nothing is playing.
+- **Off stays off:** turning the speakers off works even when an app (a browser tab, the iOS Simulator) holds an audio stream open, which otherwise wakes KEF speakers straight back up.
 - **Live:** reflects changes made with the remote, top panel or KEF Connect.
 - **Setup:** on first launch you choose which pair this Mac controls (**Identify** wakes a pair briefly so you can tell which one it is). The choice is remembered by the speaker's permanent KEF ID, and **Change Speakers…** in About switches pairs.
 - **Native and light:** SwiftUI with system controls and SF Symbols, no polling, and no network connection at all while the speakers are in standby and the popover is closed.

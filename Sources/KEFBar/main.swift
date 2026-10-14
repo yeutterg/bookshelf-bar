@@ -8,10 +8,12 @@ final class AppState {
     static let shared = AppState()
     let speaker = SpeakerModel()
     lazy var smoothStart = SmoothStart(speaker: speaker)
+    lazy var keepAwake = KeepAwake(speaker: speaker, smoothStart: smoothStart)
 
     func start() {
         speaker.start()
         smoothStart.start()
+        keepAwake.start()
     }
 }
 
@@ -21,7 +23,7 @@ struct KEFBarApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            RootView(speaker: state.speaker, smoothStart: state.smoothStart)
+            RootView(speaker: state.speaker, smoothStart: state.smoothStart, keepAwake: state.keepAwake)
         } label: {
             MenuBarIcon(speaker: state.speaker, smoothStart: state.smoothStart)
         }
@@ -47,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let page = CommandLine.arguments.firstIndex(of: "--page").flatMap { i in
             i + 1 < CommandLine.arguments.count ? Page(rawValue: CommandLine.arguments[i + 1]) : nil
         } ?? .main
-        let host = NSHostingView(rootView: RootView(speaker: state.speaker, smoothStart: state.smoothStart, page: page))
+        let host = NSHostingView(rootView: RootView(speaker: state.speaker, smoothStart: state.smoothStart, keepAwake: state.keepAwake, page: page))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 364, height: 600),
                               styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
         window.titlebarAppearsTransparent = true

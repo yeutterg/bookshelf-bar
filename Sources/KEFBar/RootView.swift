@@ -9,6 +9,7 @@ enum Page: String { case main, sound, about, setup }
 struct RootView: View {
     let speaker: SpeakerModel
     let smoothStart: SmoothStart
+    let keepAwake: KeepAwake
     @State var page: Page = .main
 
     var body: some View {
@@ -35,7 +36,7 @@ struct RootView: View {
     @ViewBuilder private var pageView: some View {
         switch page {
             case .main:
-                MainPage(speaker: speaker, smoothStart: smoothStart,
+                MainPage(speaker: speaker, smoothStart: smoothStart, keepAwake: keepAwake,
                          openSettings: { page = .sound }, openAbout: { page = .about })
                     .transition(.push(from: .leading))
             case .sound:

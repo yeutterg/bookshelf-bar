@@ -5,16 +5,18 @@ import SwiftUI
 struct MainPage: View {
     let speaker: SpeakerModel
     let smoothStart: SmoothStart
+    let keepAwake: KeepAwake
     let openSettings: () -> Void
     let openAbout: () -> Void
 
     var body: some View {
+        // Every group has its header outside the box, System Settings style.
         PageForm {
             if speaker.connection == .connected {
                 Section("Volume") { VolumeRow(speaker: speaker, smoothStart: smoothStart) }
             }
-            Section {
-                HeaderRow(speaker: speaker, smoothStart: smoothStart)
+            Section(speaker.info?.name ?? "Speakers") {
+                PowerRow(speaker: speaker, smoothStart: smoothStart)
                 SpeakerArtwork(modelName: speaker.info?.modelName ?? "", dimmed: !speaker.isOn || speaker.connection != .connected,
                                muted: speaker.isOn && speaker.muted)
                     .frame(height: 140)
@@ -24,7 +26,10 @@ struct MainPage: View {
             switch speaker.connection {
             case .connected:
                 Section("Input") { InputRows(speaker: speaker) }
-                Section { SmoothStartRow(smoothStart: smoothStart) }
+                Section("Automation") {
+                    SmoothStartRow(smoothStart: smoothStart)
+                    KeepAwakeRow(keepAwake: keepAwake)
+                }
                 Section {
                     DisclosureRow(title: "Settings", systemImage: "gearshape", action: openSettings)
                     DisclosureRow(title: "About", systemImage: "info.circle", action: openAbout)
@@ -56,30 +61,30 @@ extension SpeakerModel {
     }
 }
 
-/// Name and status with a power switch, like the Wi‑Fi and Bluetooth menu extras.
-struct HeaderRow: View {
+/// Power switch with the current status underneath, like the Wi‑Fi and Bluetooth menu extras.
+struct PowerRow: View {
     let speaker: SpeakerModel
     let smoothStart: SmoothStart
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(speaker.info?.name ?? "KEF Speakers").font(.headline)
-                HStack(spacing: 6) {
-                    Text(status).font(.subheadline).foregroundStyle(.secondary)
-                    if smoothStart.phase != .idle { ProgressView().controlSize(.mini) }
+        if speaker.connection == .connected {
+            Toggle(isOn: Binding(get: { speaker.isOn }, set: { _ in speaker.togglePower() })) {
+                Label {
+                    Text("Power")
+                    HStack(spacing: 6) {
+                        Text(status)
+                        if smoothStart.phase != .idle { ProgressView().controlSize(.mini) }
+                    }
+                    .lineLimit(1)
+                } icon: {
+                    Image(systemName: "power")
                 }
-                .lineLimit(1)
             }
-            Spacer()
-            if speaker.connection == .connected {
-                Toggle("Power", isOn: Binding(get: { speaker.isOn }, set: { _ in speaker.togglePower() }))
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-            } else if case .unreachable = speaker.connection {
-                EmptyView()
-            } else {
-                ProgressView().controlSize(.small)
+            .toggleStyle(.switch)
+        } else {
+            HStack(spacing: 8) {
+                if case .unreachable = speaker.connection {} else { ProgressView().controlSize(.small) }
+                Text(status).foregroundStyle(.secondary)
             }
         }
     }
@@ -92,7 +97,7 @@ struct HeaderRow: View {
         case .connected:
             if smoothStart.phase != .idle { return "Waking…" }
             guard speaker.isOn else { return "Standby" }
-            return speaker.muted ? "\(speaker.source.label) · Muted" : speaker.source.label
+            return speaker.muted ? "\(speaker.source.label) · Muted" : "On · \(speaker.source.label)"
         }
     }
 }
@@ -250,8 +255,24 @@ struct SmoothStartRow: View {
         switch smoothStart.phase {
         case .waking: return "Holding volume low while waking…"
         case .settling: return "Easing volume up…"
-        case .idle: return smoothStart.usbPresent ? "Ramps volume up while waking" : "Connect the speakers over USB‑C"
+        case .idle: return "Ramps volume up while waking"
         }
+    }
+}
+
+struct KeepAwakeRow: View {
+    @Bindable var keepAwake: KeepAwake
+
+    var body: some View {
+        Toggle(isOn: $keepAwake.enabled) {
+            Label {
+                Text("Keep Awake With Screen")
+                Text("Standby when the screen turns off").lineLimit(1)
+            } icon: {
+                Image(systemName: "display")
+            }
+        }
+        .toggleStyle(.switch)
     }
 }
 

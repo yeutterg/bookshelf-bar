@@ -327,3 +327,17 @@ Shortcuts/AppIntents ("Switch KEF to TV"), CLI (`kef vol 30`).
   - hilli/go-kef-w2 (port 4430 auth)
   - N0ciple/pykefcontrol
 - Clones are in the session scratchpad: `…/scratchpad/src/`.
+
+## 8. Standby findings (2026-10-14, later)
+
+- **Held audio streams re-wake the speaker.** With Wake On = USB Audio, if any app holds an
+  audio stream open to the KEF when it enters standby (seen: iOS Simulator, via
+  `pmset -g assertions` → `audio-out AppleUSBAudioEngine:KEF:…`), the speaker wakes itself again
+  about 3 s later. This happens with the speaker's own power button too, so it's firmware behaviour.
+- **Wake On is only checked at standby entry.** Setting `wakeUpSource = wakeup_default`, entering
+  standby, then restoring `usb` keeps the speaker asleep even with the stream still held.
+- **Side effect:** entering standby with USB wake off powers down the speaker's USB interface
+  (the CoreAudio device disappears) until the next wake, so Mac audio can't wake it. KEF Bar
+  therefore uses this only when a stream is held, where plain standby wouldn't stick at all.
+- With Wake On = USB Audio and no held stream, the USB device stays present through light and
+  deep (`networkStandby`) standby, so playing audio wakes the speaker as before.

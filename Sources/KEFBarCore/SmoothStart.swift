@@ -60,6 +60,7 @@ public final class SmoothStart {
         usb.start()
         usbPresent = usb.device != nil
         usbRunning = usb.isRunning
+        speaker.usbStreamActive = usbRunning
         kefWasDefault = usb.isDefaultOutput
         liveVolume = usb.volume
         if rememberedVolume == nil { rememberedVolume = usb.volume }
@@ -103,11 +104,14 @@ public final class SmoothStart {
         case .removed:
             usbPresent = false
             usbRunning = false
+            speaker.usbStreamActive = false
             restoreDefault = kefWasDefault
             if enabled { phase = .waking }
 
         case .arrived(let id):
             usbPresent = true
+            usbRunning = AudioHardware.isRunningSomewhere(id)
+            speaker.usbStreamActive = usbRunning
             liveVolume = AudioHardware.volume(id)
             if enabled { guardArrival(id) } else { phase = .idle }
 
@@ -118,6 +122,7 @@ public final class SmoothStart {
 
         case .runningChanged(let running):
             usbRunning = running
+            speaker.usbStreamActive = running
             guard running, enabled, usb.isDefaultOutput else { break }
             // Audio is starting. If the speaker is asleep, drop the level right now, before it
             // wakes, and hold it until the wake and USB reconnect are over.

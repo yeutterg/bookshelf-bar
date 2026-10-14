@@ -59,6 +59,7 @@ public final class SpeakerModel {
     private let defaults = UserDefaults.standard
     private static let savedSpeakerKey = "selectedKefId"
     private static let savedHostKey = "manualHost"
+    private static let pendingWakeRestoreKey = "pendingWakeRestore"
 
     public init() {}
 
@@ -159,6 +160,7 @@ public final class SpeakerModel {
             try await refresh()
             connection = .connected
             localNetworkDenied = false
+            restorePendingWakeSource()
             log.info("connected to \(host, privacy: .public)")
             updateEventStream(force: true)
         } catch {
@@ -211,13 +213,60 @@ public final class SpeakerModel {
     }
 
     public func setSource(_ s: PhysicalSource) {
+        if s == .standby { turnOff(); return }
         source = s
-        if s != .standby { status = .powerOn }
+        status = .powerOn
         Task { await perform { try await $0.setSource(s) } }
     }
 
     public func togglePower() {
-        setSource(isOn ? .standby : .usb)
+        if isOn { turnOff() } else { setSource(.usb) }
+    }
+
+    /// Set by Smooth Start: some app on this Mac has an audio stream open to the KEF.
+    public var usbStreamActive = false
+
+    /// Standby that sticks. With Wake On set to USB Audio, the firmware wakes straight back up
+    /// if an app is holding an audio stream open to it when it enters standby (the iOS
+    /// Simulator, a paused browser tab…). In that case only: switch the wake source off, enter
+    /// standby, and restore it a few seconds later (restoring doesn't wake it).
+    ///
+    /// Side effect, measured: entering standby with USB wake off also powers down the speaker's
+    /// USB interface until its next wake, so Mac audio can't wake it. That's why this is limited
+    /// to the stream-held case, where it would otherwise never stay off at all.
+    public func turnOff() {
+        status = .standby
+        source = .standby
+        guard let client else { return }
+        let streamHeld = usbStreamActive
+        Task {
+            let wake = streamHeld ? ((try? await client.get(.wakeUpSource).string).flatMap(WakeUpSource.init) ?? .none) : .none
+            if wake != .none {
+                defaults.set(wake.rawValue, forKey: Self.pendingWakeRestoreKey)
+                try? await client.set(.wakeUpSource, WakeUpSource.none.value)
+            }
+            await perform { try await $0.setSource(.standby) }
+            if wake != .none {
+                try? await Task.sleep(for: .seconds(6))
+                try? await client.set(.wakeUpSource, wake.value)
+                defaults.removeObject(forKey: Self.pendingWakeRestoreKey)
+            }
+        }
+    }
+
+    /// If the app quit during `turnOff`'s window, put the wake source back.
+    private func restorePendingWakeSource() {
+        guard let raw = defaults.string(forKey: Self.pendingWakeRestoreKey), let wake = WakeUpSource(rawValue: raw),
+              let client else { return }
+        Task {
+            try? await client.set(.wakeUpSource, wake.value)
+            defaults.removeObject(forKey: Self.pendingWakeRestoreKey)
+        }
+    }
+
+    /// Reads the speaker's auto-standby mode live (used by Keep Awake).
+    public func liveStandbyMode() async -> StandbyMode? {
+        (try? await client?.get(.standbyMode).string).flatMap(StandbyMode.init)
     }
 
     /// Wakes the speaker into `source` only if it's currently in standby. Used by Smooth Start.
