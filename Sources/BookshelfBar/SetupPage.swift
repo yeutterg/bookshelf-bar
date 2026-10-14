@@ -97,7 +97,7 @@ struct LocalNetworkSection: View {
                 }
                 .buttonStyle(.borderedProminent)
                 Spacer()
-                Button("Try Again", action: speaker.retry)
+                Button("Try Again", action: { speaker.retry() })
             }
         }
     }

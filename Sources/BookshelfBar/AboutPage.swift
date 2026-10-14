@@ -52,7 +52,7 @@ struct CopyableRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
-                Button(action: copy) {
+                Button(action: { copy() }) {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
                         .contentTransition(.symbolEffect(.replace))
                         .foregroundStyle(copied ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
@@ -65,8 +65,8 @@ struct CopyableRow: View {
         }
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .onTapGesture(perform: copy)
-        .contextMenu { Button("Copy \(title)", action: copy) }
+        .onTapGesture { copy() }
+        .contextMenu { Button("Copy \(title)", action: { copy() }) }
         .animation(.easeOut(duration: 0.15), value: hovering)
     }
 

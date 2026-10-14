@@ -141,13 +141,13 @@ struct VolumeRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Button(action: toggleMute) {
+            Button(action: { toggleMute() }) {
                 PaperIcon(muted ? "icon-volume-muted" : "icon-volume")
                     .frame(width: 18)
             }
             .buttonStyle(.borderless)
             .help(muted ? "Unmute" : "Mute")
-            Slider(value: Binding(get: { value }, set: set), in: 0...100) { Text("Volume") }
+            Slider(value: Binding(get: { value }, set: { set($0) }), in: 0...100) { Text("Volume") }
                 .labelsHidden()
             Text("\(Int(value.rounded()))")
                 .monospacedDigit()
@@ -277,7 +277,7 @@ struct ManualConnectRows: View {
             .foregroundStyle(.secondary)
         TextField("IP address", text: $host, prompt: Text("192.168.1.20"))
             .onSubmit(connect)
-        Button("Connect", action: connect)
+        Button("Connect", action: { connect() })
             .disabled(host.isEmpty)
     }
 
