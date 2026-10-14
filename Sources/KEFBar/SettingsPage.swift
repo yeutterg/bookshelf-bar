@@ -2,14 +2,13 @@ import KEFBarCore
 import KEFKit
 import SwiftUI
 
-struct SoundPowerPage: View {
+struct SettingsPage: View {
     let speaker: SpeakerModel
     let back: () -> Void
-    let about: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            PageHeader(title: "Sound & Power", back: back)
+            PageHeader(title: "Settings", back: back)
             PageForm {
                 Section {
                     Toggle(isOn: Binding(get: { speaker.deskMode }, set: speaker.setDeskMode)) {
@@ -43,6 +42,18 @@ struct SoundPowerPage: View {
                     }
                 }
 
+                if speaker.source == .usb {
+                Section {
+                    ValueSlider(title: "Speaker Level", value: Double(speaker.volume), range: 0...100, step: 1,
+                                commit: { speaker.setVolume(Int($0)) }) { "\(Int($0))" }
+                } header: {
+                    Text("USB‑C")
+                } footer: {
+                    Text("On USB‑C, KEF Bar's volume is the Mac's output volume, same as the macOS Sound control. This sets the speakers' own level underneath it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                }
+
                 Section("Power") {
                     Picker("Auto Standby", selection: Binding(get: { speaker.standbyMode }, set: speaker.setStandbyMode)) {
                         Text("After 20 min (ECO)").tag(StandbyMode.eco)
@@ -68,7 +79,6 @@ struct SoundPowerPage: View {
                     PasswordSection(speaker: speaker)
                 }
 
-                Section { DisclosureRow(title: "About", systemImage: "info.circle", action: about) }
             }
         }
         // Re-run once connected: the page can open before the first connection finishes.

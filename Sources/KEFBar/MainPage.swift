@@ -6,22 +6,29 @@ struct MainPage: View {
     let speaker: SpeakerModel
     let smoothStart: SmoothStart
     let openSettings: () -> Void
+    let openAbout: () -> Void
 
     var body: some View {
         PageForm {
+            if speaker.connection == .connected {
+                Section("Volume") { VolumeRow(speaker: speaker, smoothStart: smoothStart) }
+            }
             Section {
                 HeaderRow(speaker: speaker, smoothStart: smoothStart)
-                SpeakerArtwork(modelName: speaker.info?.modelName ?? "", state: speaker.visualState(smoothStart))
+                SpeakerArtwork(modelName: speaker.info?.modelName ?? "", dimmed: !speaker.isOn || speaker.connection != .connected,
+                               muted: speaker.isOn && speaker.muted)
                     .frame(height: 140)
                     .frame(maxWidth: .infinity)
             }
 
             switch speaker.connection {
             case .connected:
-                Section("Volume") { VolumeRow(speaker: speaker) }
                 Section("Input") { InputRows(speaker: speaker) }
                 Section { SmoothStartRow(smoothStart: smoothStart) }
-                Section { DisclosureRow(title: "Sound & Power", systemImage: "slider.horizontal.3", action: openSettings) }
+                Section {
+                    DisclosureRow(title: "Settings", systemImage: "gearshape", action: openSettings)
+                    DisclosureRow(title: "About", systemImage: "info.circle", action: openAbout)
+                }
             case .unreachable:
                 if speaker.localNetworkDenied {
                     LocalNetworkSection(speaker: speaker)
@@ -58,7 +65,11 @@ struct HeaderRow: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(speaker.info?.name ?? "KEF Speakers").font(.headline)
-                Text(status).font(.subheadline).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(status).font(.subheadline).foregroundStyle(.secondary)
+                    if smoothStart.phase != .idle { ProgressView().controlSize(.mini) }
+                }
+                .lineLimit(1)
             }
             Spacer()
             if speaker.connection == .connected {
@@ -86,36 +97,29 @@ struct HeaderRow: View {
     }
 }
 
-/// The rendered speaker pair: dimmed in standby, pulsing while waking, full colour when on.
+/// The rendered speaker pair: dimmed in standby, full colour when on. One flag drives one
+/// animation so the standby ↔ on transition is a single smooth fade.
 struct SpeakerArtwork: View {
     let modelName: String
-    let state: SpeakerState
-    @State private var pulse = false
+    let dimmed: Bool
+    let muted: Bool
 
     var body: some View {
         ZStack {
             image
                 .resizable()
                 .scaledToFit()
-                .saturation(state == .standby || state == .offline ? 0.35 : 1)
-                .brightness(state == .standby || state == .offline ? -0.2 : 0)
+                .saturation(dimmed ? 0.35 : 1)
+                .brightness(dimmed ? -0.2 : 0)
                 .shadow(color: .black.opacity(0.3), radius: 8, y: 8)
-                .opacity(state == .waking && pulse ? 0.55 : 1)
-            if state == .muted {
-                Image(systemName: "speaker.slash.fill")
-                    .font(.title3)
-                    .padding(10)
-                    .background(.regularMaterial, in: Circle())
-            }
+            Image(systemName: "speaker.slash.fill")
+                .font(.title3)
+                .padding(10)
+                .background(.regularMaterial, in: Circle())
+                .opacity(muted ? 1 : 0)
         }
-        .animation(.smooth, value: state)
-        .onChange(of: state, initial: true) { _, new in
-            if new == .waking {
-                withAnimation(.easeInOut(duration: 0.8).repeatForever()) { pulse = true }
-            } else {
-                withAnimation(.smooth) { pulse = false }
-            }
-        }
+        .animation(.easeInOut(duration: 0.45), value: dimmed)
+        .animation(.easeInOut(duration: 0.2), value: muted)
         .accessibilityHidden(true)
     }
 
@@ -132,24 +136,40 @@ struct SpeakerArtwork: View {
 
 struct VolumeRow: View {
     let speaker: SpeakerModel
+    let smoothStart: SmoothStart
+
+    /// On USB‑C the slider is the Mac's output volume, the same value the macOS Sound control
+    /// and volume keys change. On the speaker's other inputs it's the speaker's own volume.
+    private var usesMacVolume: Bool { speaker.source == .usb && smoothStart.macVolume != nil }
+    private var muted: Bool { usesMacVolume ? smoothStart.macMuted : speaker.muted }
+    private var value: Double {
+        usesMacVolume ? Double(smoothStart.macVolume ?? 0) * 100 : Double(speaker.volume)
+    }
 
     var body: some View {
         HStack(spacing: 8) {
-            Button(action: speaker.toggleMute) {
-                PaperIcon(speaker.muted ? "icon-volume-muted" : "icon-volume")
+            Button(action: toggleMute) {
+                PaperIcon(muted ? "icon-volume-muted" : "icon-volume")
                     .frame(width: 18)
             }
             .buttonStyle(.borderless)
-            .help(speaker.muted ? "Unmute" : "Mute")
-            Slider(value: Binding(get: { Double(speaker.volume) }, set: { speaker.setVolume(Int($0.rounded())) }),
-                   in: 0...100) { Text("Volume") }
+            .help(muted ? "Unmute" : "Mute")
+            Slider(value: Binding(get: { value }, set: set), in: 0...100) { Text("Volume") }
                 .labelsHidden()
-            Text("\(speaker.volume)")
+            Text("\(Int(value.rounded()))")
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .frame(width: 26, alignment: .trailing)
         }
         .disabled(!speaker.isOn)
+    }
+
+    private func set(_ v: Double) {
+        if usesMacVolume { smoothStart.setMacVolume(Float(v / 100)) } else { speaker.setVolume(Int(v.rounded())) }
+    }
+
+    private func toggleMute() {
+        if usesMacVolume { smoothStart.toggleMacMute() } else { speaker.toggleMute() }
     }
 }
 
@@ -218,7 +238,7 @@ struct SmoothStartRow: View {
         Toggle(isOn: $smoothStart.enabled) {
             Label {
                 Text("Smooth Start")
-                Text(subtitle)
+                Text(subtitle).lineLimit(1)
             } icon: {
                 Image(systemName: "point.bottomleft.forward.to.point.topright.scurvepath")
             }
@@ -227,11 +247,10 @@ struct SmoothStartRow: View {
     }
 
     private var subtitle: String {
-        if !smoothStart.usbPresent { return "Connect the speakers over USB‑C" }
         switch smoothStart.phase {
-        case .idle: return "Ramps volume up while waking"
-        case .waking: return "Waking speakers, holding audio…"
-        case .settling: return "Restoring volume…"
+        case .waking: return "Holding volume low while waking…"
+        case .settling: return "Easing volume up…"
+        case .idle: return smoothStart.usbPresent ? "Ramps volume up while waking" : "Connect the speakers over USB‑C"
         }
     }
 }

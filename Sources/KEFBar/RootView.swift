@@ -35,13 +35,14 @@ struct RootView: View {
     @ViewBuilder private var pageView: some View {
         switch page {
             case .main:
-                MainPage(speaker: speaker, smoothStart: smoothStart) { page = .sound }
+                MainPage(speaker: speaker, smoothStart: smoothStart,
+                         openSettings: { page = .sound }, openAbout: { page = .about })
                     .transition(.push(from: .leading))
             case .sound:
-                SoundPowerPage(speaker: speaker, back: { page = .main }, about: { page = .about })
+                SettingsPage(speaker: speaker, back: { page = .main })
                     .transition(.push(from: .trailing))
             case .about:
-                AboutPage(speaker: speaker, back: { page = .sound }, changeSpeakers: {
+                AboutPage(speaker: speaker, back: { page = .main }, changeSpeakers: {
                     page = .main
                     speaker.forget()
                 })
@@ -79,7 +80,12 @@ struct PageForm<Content: View>: View {
             .scrollContentBackground(.hidden)
             .scrollDisabled(true)
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height } action: { _, new in
-                if new > 0 { height = new }
+                guard new > 0, abs(new - height) > 0.5 else { return }
+                // Apply size changes instantly; animating the window height while rows also
+                // animate is what made the standby ↔ on transition jitter.
+                var t = Transaction()
+                t.disablesAnimations = true
+                withTransaction(t) { height = new }
             }
             .frame(height: height)
     }
