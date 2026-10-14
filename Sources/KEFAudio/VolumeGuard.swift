@@ -64,10 +64,37 @@ public final class VolumeGuard: @unchecked Sendable {
         lock.withLock { generation += 1 }
     }
 
-    /// One-off write of the hold level, e.g. just before a wake so macOS saves the low value.
+    private var pendingLevel: (id: AudioObjectID, level: Float)?
+    private var levelWriterRunning = false
+
+    /// Writes a volume level, latest value wins. Slider drags produce far more values than
+    /// CoreAudio writes can keep up with; queuing each one made the volume keep "following"
+    /// after the user let go. Only the newest pending value is written.
     public func setLevel(_ id: AudioObjectID, _ level: Float) {
+        let startWriter = lock.withLock { () -> Bool in
+            pendingLevel = (id, level)
+            if levelWriterRunning { return false }
+            levelWriterRunning = true
+            return true
+        }
+        guard startWriter else { return }
         let audio = self.audio
-        queue.async { _ = audio.setVolume(id, level) }
+        queue.async { [weak self] in
+            while let next = self?.takePendingLevel() {
+                _ = audio.setVolume(next.id, next.level)
+            }
+        }
+    }
+
+    private func takePendingLevel() -> (id: AudioObjectID, level: Float)? {
+        lock.withLock {
+            guard let next = pendingLevel else {
+                levelWriterRunning = false
+                return nil
+            }
+            pendingLevel = nil
+            return next
+        }
     }
 
     public func setMuted(_ id: AudioObjectID, _ muted: Bool) {

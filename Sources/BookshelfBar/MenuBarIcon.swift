@@ -16,60 +16,34 @@ struct MenuBarIcon: View {
     }
 }
 
-/// The compact two-cabinet glyph from the Paper prototype, drawn for one state.
+/// Two high-contrast speaker cabinets: outlined while inactive, filled while active.
 struct MenuBarGlyph: View {
     let state: SpeakerState
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(.primary.opacity(filled ? 0.3 : 0.035))
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .stroke(.primary.opacity(outlineOpacity), lineWidth: 0.85)
-
-            HStack(spacing: 2) {
-                MenuBarCabinet()
-                MenuBarCabinet()
+            HStack(spacing: 3.2) {
+                MenuBarCabinet(filled: filled)
+                MenuBarCabinet(filled: filled)
             }
-            .opacity(glyphOpacity)
-            .blendMode(filled ? .destinationOut : .normal)
 
             if state == .muted {
                 Capsule()
                     .fill(.primary)
-                    .frame(width: 1.25, height: 15)
+                    .frame(width: 1.35, height: 17)
                     .rotationEffect(.degrees(45))
                     .blendMode(.destinationOut)
             }
         }
         .compositingGroup()
         .frame(width: 22, height: 14)
-        .opacity(state == .offline ? 0.55 : 1)
         .environment(\.colorScheme, .light)   // .primary = black, as a template image expects
     }
 
-    /// Paper frame 06 has four treatments. Extra runtime states intentionally fold into the
-    /// closest one so the status item keeps the same visual language.
     private var filled: Bool {
         switch state {
         case .on, .playing, .muted: true
         case .offline, .reconnecting, .standby, .waking: false
-        }
-    }
-
-    private var outlineOpacity: Double {
-        switch state {
-        case .waking, .reconnecting: 0.55
-        case .standby, .offline: 0.13
-        case .on, .playing, .muted: 0
-        }
-    }
-
-    private var glyphOpacity: Double {
-        switch state {
-        case .waking, .reconnecting: 0.58
-        case .standby, .offline: 0.2
-        case .on, .playing, .muted: 0.72
         }
     }
 
@@ -99,19 +73,29 @@ struct MenuBarGlyph: View {
 }
 
 private struct MenuBarCabinet: View {
+    let filled: Bool
+
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                .stroke(.primary, lineWidth: 0.9)
-            Circle()
-                .stroke(.primary, lineWidth: 0.75)
-                .frame(width: 3.1, height: 3.1)
-                .offset(y: -0.7)
+                .fill(filled ? AnyShapeStyle(.primary) : AnyShapeStyle(.clear))
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .stroke(.primary, lineWidth: 1.05)
+            if filled {
+                Circle()
+                    .fill(.primary)
+                    .frame(width: 4.4, height: 4.4)
+                    .blendMode(.destinationOut)
+            } else {
+                Circle()
+                    .stroke(.primary, lineWidth: 0.9)
+                    .frame(width: 4.4, height: 4.4)
+            }
             Circle()
                 .fill(.primary)
-                .frame(width: 0.9, height: 0.9)
-                .offset(y: -0.7)
+                .frame(width: 1.2, height: 1.2)
         }
-        .frame(width: 5, height: 9)
+        .compositingGroup()
+        .frame(width: 6, height: 11)
     }
 }

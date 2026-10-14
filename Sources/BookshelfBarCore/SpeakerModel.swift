@@ -70,6 +70,8 @@ public final class SpeakerModel {
     private var eventTask: Task<Void, Never>?
     private var volumeWrite: Task<Void, Never>?
     private var localVolumeUntil = Date.distantPast
+    private var pendingVolume: Int?
+    private var volumeWriter: UUID?
     private var retryTask: Task<Void, Never>?
     private var connectTask: Task<Bool, Never>?
     private var connectTaskGeneration: Int?
@@ -391,6 +393,8 @@ public final class SpeakerModel {
         defaults.set(fromVersion, forKey: "firmwareLockFromVersion")
         isUpdatingFirmware = true
         volumeWrite?.cancel()
+        volumeWrite = nil
+        pendingVolume = nil
     }
 
     public func endFirmwareLock() {
@@ -408,13 +412,19 @@ public final class SpeakerModel {
         guard !isUpdatingFirmware else { return }
         volume = min(max(value, 0), 100)
         localVolumeUntil = .now + 1
-        // Coalesce slider drags: only the latest value is sent.
-        volumeWrite?.cancel()
-        let target = volume
+        // Latest value wins: one request in flight at a time, always sending the newest value,
+        // so the speaker tracks the slider instead of replaying stale values afterwards.
+        pendingVolume = volume
+        guard volumeWrite == nil else { return }
+        let writer = UUID()
+        volumeWriter = writer
         volumeWrite = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(60))
-            guard !Task.isCancelled else { return }
-            await self?.perform { try await $0.setVolume(target) }
+            while let self, !Task.isCancelled, let target = self.pendingVolume {
+                self.pendingVolume = nil
+                await self.perform { try await $0.setVolume(target) }
+            }
+            // Only clear our own slot; a cancelled writer must not clear a newer one.
+            if self?.volumeWriter == writer { self?.volumeWrite = nil }
         }
     }
 
@@ -696,6 +706,7 @@ public final class SpeakerModel {
         retryTask = nil
         volumeWrite?.cancel()
         volumeWrite = nil
+        pendingVolume = nil
         oneShotManualHost = nil
     }
 
