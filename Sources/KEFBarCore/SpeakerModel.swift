@@ -178,11 +178,20 @@ public final class SpeakerModel {
     @discardableResult
     public func ensureConnected(_ reason: String) async -> Bool {
         if let running = connectTask { return await running.value }
-        let task = Task { await self.attemptConnection(reason) }
+        // Hard cap per attempt so one stuck attempt can never block every later reconnect.
+        let task = Task {
+            (try? await withDeadline(12, label: "connect") { await self.attemptConnection(reason) })
+                ?? self.timedOutAttempt()
+        }
         connectTask = task
         let ok = await task.value
         connectTask = nil
         return ok
+    }
+
+    private func timedOutAttempt() -> Bool {
+        markUnhealthy(KEFError.timedOut("speaker"))
+        return false
     }
 
     private func attemptConnection(_ reason: String) async -> Bool {
@@ -197,7 +206,7 @@ public final class SpeakerModel {
                                                     cachedHost: defaults.string(forKey: Self.hostKey(kefId)) ?? manual,
                                                     bonjour: info)
             } else if let manual {
-                _ = try await KEFClient(host: manual, timeout: 3).status()
+                _ = try await withDeadline(4, label: manual) { try await KEFClient(host: manual, timeout: 3).status() }
                 found = manual
             } else {
                 return false
@@ -208,7 +217,7 @@ public final class SpeakerModel {
                 eventTask?.cancel()
                 eventTask = nil
             }
-            try await refresh()
+            try await withDeadline(5, label: "refresh") { try await self.refresh() }
             markHealthy(found, kefId: kefId)
             return true
         } catch {
@@ -425,7 +434,10 @@ public final class SpeakerModel {
 
     // MARK: Private
 
-    public static let localNetworkSettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!
+    /// Opens System Settings directly on Privacy & Security › Local Network (anchor found in the
+    /// Settings extension's Info.plist; the older `Privacy_LocalNetwork` anchor only reaches the
+    /// Privacy & Security root on current macOS).
+    public static let localNetworkSettingsURL = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?privacy-localnetwork")!
 
     /// Retry now (e.g. after the user grants the Local Network permission).
     public func retry() {

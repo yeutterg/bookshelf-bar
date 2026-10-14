@@ -9,6 +9,14 @@ import Foundation
 public enum KEFLocator {
     public static func locate(kefId: String, cachedHost: String?, bonjour: KEFSpeakerInfo?,
                               timeout: Duration = .seconds(8)) async throws -> String {
+        let seconds = Double(timeout.components.seconds) + 1
+        return try await withDeadline(seconds, label: "speaker") {
+            try await race(kefId: kefId, cachedHost: cachedHost, bonjour: bonjour, timeout: timeout)
+        }
+    }
+
+    private static func race(kefId: String, cachedHost: String?, bonjour: KEFSpeakerInfo?,
+                             timeout: Duration) async throws -> String {
         try await withThrowingTaskGroup(of: String?.self) { group in
             var candidates = 0
             if let cachedHost {
@@ -50,9 +58,11 @@ public enum KEFLocator {
 
     /// Confirms `host` is the speaker with `kefId` (short timeout).
     public static func verify(_ host: String, kefId: String) async throws -> String {
-        let client = KEFClient(host: host, timeout: 3)
-        let id = try await client.get("settings:/kef/host/kefId").string
-        guard id == kefId else { throw KEFError.wrongSpeaker }
-        return host
+        try await withDeadline(4, label: host) {
+            let client = KEFClient(host: host, timeout: 3)
+            let id = try await client.get("settings:/kef/host/kefId").string
+            guard id == kefId else { throw KEFError.wrongSpeaker }
+            return host
+        }
     }
 }

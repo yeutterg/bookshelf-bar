@@ -29,24 +29,65 @@ final class AppState {
         } onChange: {
             Task { @MainActor in
                 let state = AppState.shared
-                if state.speaker.localNetworkDenied, !state.askedForLocalNetwork {
-                    state.askedForLocalNetwork = true
-                    state.showLocalNetworkAlert()
+                if state.speaker.localNetworkDenied {
+                    // The approval is tied to the app's binary. If the binary on disk was replaced
+                    // since launch (an update or rebuild), this process no longer matches it:
+                    // relaunch from the new binary instead of asking the user for nothing.
+                    if state.binaryReplacedSinceLaunch {
+                        state.relaunch()
+                    } else if !state.askedForLocalNetwork {
+                        state.askedForLocalNetwork = true
+                        state.showLocalNetworkAlert()
+                    }
                 }
                 state.watchLocalNetworkPermission()
             }
         }
     }
 
+    private let launchDate = Date()
+
+    private var binaryReplacedSinceLaunch: Bool {
+        guard let url = Bundle.main.executableURL,
+              let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        else { return false }
+        return modified > launchDate
+    }
+
+    private func relaunch() {
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, _ in
+            Task { @MainActor in NSApp.terminate(nil) }
+        }
+    }
+
+    private var permissionWindow: NSWindow?
+
+    /// Non-modal on purpose: a modal alert would block the main thread, and with it the
+    /// reconnect checks that notice when access is turned on.
     private func showLocalNetworkAlert() {
-        let alert = NSAlert()
-        alert.messageText = "KEF Bar needs Local Network access"
-        alert.informativeText = "macOS is blocking KEF Bar from reaching your speakers on this network. Turn on KEF Bar in Privacy & Security › Local Network. KEF Bar reconnects as soon as it's allowed."
-        alert.addButton(withTitle: "Open Privacy Settings")
-        alert.addButton(withTitle: "Not Now")
+        if let w = permissionWindow { w.makeKeyAndOrderFront(nil); NSApp.activate(); return }
+        let view = LocalNetworkPrompt(
+            open: { NSWorkspace.shared.open(SpeakerModel.localNetworkSettingsURL) },
+            dismiss: { [weak self] in self?.permissionWindow?.close(); self?.permissionWindow = nil })
+        let window = NSPanel(contentRect: .zero, styleMask: [.titled, .closable, .fullSizeContentView],
+                             backing: .buffered, defer: false)
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isReleasedWhenClosed = false
+        window.level = .floating
+        window.contentView = NSHostingView(rootView: view)
+        window.setContentSize(window.contentView!.fittingSize)
+        window.center()
+        window.makeKeyAndOrderFront(nil)
         NSApp.activate()
-        if alert.runModal() == .alertFirstButtonReturn {
-            NSWorkspace.shared.open(SpeakerModel.localNetworkSettingsURL)
+        permissionWindow = window
+        // Close it automatically once access works.
+        Task { @MainActor in
+            while self.speaker.localNetworkDenied, self.permissionWindow != nil { try? await Task.sleep(for: .seconds(1)) }
+            self.permissionWindow?.close()
+            self.permissionWindow = nil
         }
     }
 
@@ -126,6 +167,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
             }
         }
+    }
+}
+
+/// Native-looking permission request, shown when macOS blocks local network access.
+struct LocalNetworkPrompt: View {
+    let open: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "network")
+                .font(.system(size: 34))
+                .foregroundStyle(.tint)
+            Text("KEF Bar needs Local Network access").font(.headline)
+            Text("macOS is blocking KEF Bar from reaching your speakers. Turn on KEF Bar in Local Network settings. This window closes by itself once it's allowed.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Not Now", action: dismiss)
+                Button("Open Local Network Settings", action: open)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 360)
     }
 }
 
