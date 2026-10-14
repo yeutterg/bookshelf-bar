@@ -37,7 +37,10 @@ final class AppState {
                         state.relaunch()
                     } else if !state.askedForLocalNetwork {
                         state.askedForLocalNetwork = true
-                        state.showLocalNetworkAlert()
+                        // After an install or update macOS takes a few seconds to re-apply an
+                        // existing approval; only ask if it's still blocked after that.
+                        try? await Task.sleep(for: .seconds(15))
+                        if state.speaker.localNetworkDenied { state.showLocalNetworkAlert() } else { state.askedForLocalNetwork = false }
                     }
                 }
                 state.watchLocalNetworkPermission()
