@@ -8,7 +8,7 @@ struct SettingsPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PageHeader(title: "Settings", back: back)
+            PageHeader(title: "Sound", back: back)
             PageForm {
                 Section {
                     Toggle(isOn: Binding(get: { speaker.deskMode }, set: speaker.setDeskMode)) {

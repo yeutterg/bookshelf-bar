@@ -30,8 +30,8 @@ struct MainPage: View {
                     SmoothStartRow(smoothStart: smoothStart)
                     KeepAwakeRow(keepAwake: keepAwake)
                 }
-                Section {
-                    DisclosureRow(title: "Settings", systemImage: "gearshape", action: openSettings)
+                Section("Settings") {
+                    DisclosureRow(title: "Sound", systemImage: "slider.horizontal.3", action: openSettings)
                     DisclosureRow(title: "About", systemImage: "info.circle", action: openAbout)
                 }
             case .unreachable:
