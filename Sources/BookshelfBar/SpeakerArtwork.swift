@@ -4,15 +4,12 @@ import SwiftUI
 /// Approved C artwork: pre-rendered official cabinet geometry, dark graphite, no wordmark.
 /// Only state transitions animate; there is no 3D renderer, timer or idle animation loop.
 struct SpeakerArtwork: View {
-    static let animateKey = "animateArtwork"
-
     let finish: KEFFinish
     let state: SpeakerState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     // SwiftUI drives repeating animations from the CPU every frame, and the menu bar panel can
-    // stay alive while hidden. Only pulse while the panel is in front and the user wants it.
+    // stay alive while hidden. Only pulse while the panel is in front.
     @Environment(\.appearsActive) private var appearsActive
-    @AppStorage(SpeakerArtwork.animateKey) private var animate = true
 
     var body: some View {
         let matched = Self.images[finish.artwork]
@@ -58,7 +55,7 @@ struct SpeakerArtwork: View {
         .accessibilityHidden(true)
     }
 
-    private var still: Bool { reduceMotion || !animate || !appearsActive }
+    private var still: Bool { reduceMotion || !appearsActive }
 
     private var dimmed: Bool { state == .offline || state == .reconnecting || state == .standby }
 

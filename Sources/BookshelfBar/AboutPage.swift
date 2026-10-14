@@ -7,7 +7,6 @@ struct AboutPage: View {
     let firmware: FirmwareUpdater
     let back: () -> Void
     let changeSpeakers: () -> Void
-    @AppStorage(SpeakerArtwork.animateKey) private var animateArtwork = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,11 +16,6 @@ struct AboutPage: View {
                     ForEach(rows, id: \.0) { CopyableRow(title: $0.0, value: $0.1) }
                 }
                 Section { FirmwareUpdateRow(updater: firmware) }
-                Section {
-                    Toggle("Animate Speaker Artwork", isOn: $animateArtwork)
-                } footer: {
-                    Text("Pulses while the speakers play. Turn off to save energy.").font(.caption).foregroundStyle(.secondary)
-                }
                 Section {
                     DisclosureRow(title: "Change Speakers…", systemImage: "arrow.left.arrow.right", action: changeSpeakers)
                 } footer: {
