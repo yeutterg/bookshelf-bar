@@ -4,9 +4,15 @@ import SwiftUI
 /// Approved C artwork: pre-rendered official cabinet geometry, dark graphite, no wordmark.
 /// Only state transitions animate; there is no 3D renderer, timer or idle animation loop.
 struct SpeakerArtwork: View {
+    static let animateKey = "animateArtwork"
+
     let finish: KEFFinish
     let state: SpeakerState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    // SwiftUI drives repeating animations from the CPU every frame, and the menu bar panel can
+    // stay alive while hidden. Only pulse while the panel is in front and the user wants it.
+    @Environment(\.appearsActive) private var appearsActive
+    @AppStorage(SpeakerArtwork.animateKey) private var animate = true
 
     var body: some View {
         let matched = Self.images[finish.artwork]
@@ -25,10 +31,13 @@ struct SpeakerArtwork: View {
                     .shadow(color: .black.opacity(0.24), radius: 8, y: 7)
 
                 if state == .playing || state == .waking {
-                    SpeakerPulse(state: state, reduceMotion: reduceMotion)
+                    // `id` restarts the pulse cleanly when motion is switched back on.
+                    SpeakerPulse(state: state, reduceMotion: still)
                         .position(x: width * 0.257, y: height * 0.515)
-                    SpeakerPulse(state: state, reduceMotion: reduceMotion)
+                        .id(still)
+                    SpeakerPulse(state: state, reduceMotion: still)
                         .position(x: width * 0.743, y: height * 0.515)
+                        .id(still)
                 }
 
                 ZStack {
@@ -48,6 +57,8 @@ struct SpeakerArtwork: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: state)
         .accessibilityHidden(true)
     }
+
+    private var still: Bool { reduceMotion || !animate || !appearsActive }
 
     private var dimmed: Bool { state == .offline || state == .reconnecting || state == .standby }
 
@@ -92,6 +103,7 @@ private struct SpeakerPulse: View {
             ring(delay: state == .waking ? 0.62 : 0.82)
         }
         .frame(width: 46, height: 46)
+        .drawingGroup()
         .onAppear { expanded = true }
     }
 
