@@ -26,6 +26,9 @@ struct SetupPage: View {
     }
 
     @ViewBuilder private var form: some View {
+            if speaker.localNetworkDenied {
+                LocalNetworkSection(speaker: speaker)
+            }
             Section {
                 if speaker.speakers.isEmpty {
                     HStack(spacing: 8) {

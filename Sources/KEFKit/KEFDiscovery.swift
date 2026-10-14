@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import dnssd
 
 /// A speaker advertised over Bonjour as `_kef-info._tcp`. The TXT record carries everything we
 /// need to list it without an HTTP call.
@@ -115,6 +116,44 @@ public final class KEFDiscovery: @unchecked Sendable {
             }
             defer { group.cancelAll() }
             return try await group.next()!
+        }
+    }
+
+    public enum LocalNetworkAccess: Sendable { case granted, denied, undetermined }
+
+    /// Checks (and on first use, requests) the Local Network permission by starting a Bonjour
+    /// browse. The first call triggers the system prompt; a denial shows up as a DNS
+    /// PolicyDenied error on the browser. `undetermined` means no answer yet (prompt still open).
+    public static func requestLocalNetworkAccess(timeout: Duration = .seconds(3)) async -> LocalNetworkAccess {
+        let browser = NWBrowser(for: .bonjour(type: serviceType, domain: nil), using: .tcp)
+        defer { browser.cancel() }
+        return await withTaskGroup(of: LocalNetworkAccess.self) { group in
+            group.addTask {
+                await withCheckedContinuation { (cont: CheckedContinuation<LocalNetworkAccess, Never>) in
+                    let once = Once()
+                    browser.stateUpdateHandler = { state in
+                        switch state {
+                        case .ready: once.run { cont.resume(returning: .granted) }
+                        case .waiting(let error), .failed(let error):
+                            if case .dns(let code) = error, code == DNSServiceErrorType(kDNSServiceErr_PolicyDenied) {
+                                once.run { cont.resume(returning: .denied) }
+                            }
+                        case .cancelled: once.run { cont.resume(returning: .undetermined) }
+                        default: break
+                        }
+                    }
+                    browser.start(queue: DispatchQueue(label: "KEFPermission"))
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                browser.cancel()
+                return .undetermined
+            }
+            let result = await group.next() ?? .undetermined
+            group.cancelAll()
+            browser.cancel()
+            return result
         }
     }
 

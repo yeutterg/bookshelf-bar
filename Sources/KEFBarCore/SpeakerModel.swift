@@ -55,6 +55,7 @@ public final class SpeakerModel {
     private var discoveryTask: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
     private var volumeWrite: Task<Void, Never>?
+    private var retryTask: Task<Void, Never>?
     private let defaults = UserDefaults.standard
     private static let savedSpeakerKey = "selectedKefId"
     private static let savedHostKey = "manualHost"
@@ -68,6 +69,7 @@ public final class SpeakerModel {
 
     public func start() {
         guard discoveryTask == nil else { return }
+        checkLocalNetworkAccess()
         let savedId = defaults.string(forKey: Self.savedSpeakerKey)
         needsSetup = savedId == nil && defaults.string(forKey: Self.savedHostKey) == nil
         if let manual = defaults.string(forKey: Self.savedHostKey) {
@@ -252,12 +254,44 @@ public final class SpeakerModel {
             || { if case .timedOut = kef { true } else { false } }()
             || (error as? URLError)?.code == .notConnectedToInternet
         connection = .unreachable(error.localizedDescription)
+        scheduleRetry()
     }
 
-    /// Retry after the user grants the Local Network permission.
+    /// Retry now (e.g. after the user grants the Local Network permission).
     public func retry() {
+        checkLocalNetworkAccess()
         guard let info else { return }
         Task { await select(info) }
+    }
+
+    /// Asks macOS for Local Network access (shows the system prompt the first time). A denial
+    /// can't be re-prompted, so the UI then points at System Settings.
+    public func checkLocalNetworkAccess() {
+        Task {
+            let access = await KEFDiscovery.requestLocalNetworkAccess()
+            log.info("local network access: \(String(describing: access), privacy: .public)")
+            if access == .denied { localNetworkDenied = true }
+            if access == .granted, localNetworkDenied {
+                localNetworkDenied = false
+                retry()
+            }
+        }
+    }
+
+    /// While unreachable, retry with backoff so the app recovers by itself once the network or
+    /// permission comes back. Stops as soon as a connection succeeds.
+    private func scheduleRetry() {
+        guard retryTask == nil else { return }
+        retryTask = Task { [weak self] in
+            var delay: Double = 2
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(delay))
+                guard let self, case .unreachable = self.connection, let info = self.info else { break }
+                await self.select(info)
+                delay = min(delay * 2, 30)
+            }
+            self?.retryTask = nil
+        }
     }
 
     private func write(_ path: KEFPath, _ value: KEFValue) {
