@@ -101,7 +101,9 @@ struct ValueSlider: View {
     var body: some View {
         LabeledContent(title) {
             HStack {
-                Slider(value: Binding(get: { draft ?? value }, set: { draft = $0 }), in: range, step: step) { editing in
+                // No `step:` here: on macOS a stepped slider draws a tick per step, which turns into
+                // a smudge at these step counts. Snap to the step in the binding instead.
+                Slider(value: Binding(get: { draft ?? value }, set: { draft = ($0 / step).rounded() * step }), in: range) { editing in
                     if !editing, let d = draft { commit(d); draft = nil }
                 }
                 .labelsHidden()
