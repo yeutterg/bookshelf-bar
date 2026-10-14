@@ -12,11 +12,11 @@ struct SettingsPage: View {
             PageHeader(title: "Settings", back: back)
             PageForm {
                 Section {
-                    Toggle(isOn: Binding(get: { speaker.deskMode }, set: speaker.setDeskMode)) {
+                    Toggle(isOn: Binding(get: { speaker.deskMode }, set: { speaker.setDeskMode($0) })) {
                         Text("Desk Mode")
                         Text("Compensates for a desk in front of the speakers")
                     }
-                    Toggle(isOn: Binding(get: { speaker.wallMode }, set: speaker.setWallMode)) {
+                    Toggle(isOn: Binding(get: { speaker.wallMode }, set: { speaker.setWallMode($0) })) {
                         Text("Wall Mode")
                         Text("Compensates for a wall behind the speakers")
                     }
@@ -44,18 +44,15 @@ struct SettingsPage: View {
                         .frame(height: 54)
                 } header: {
                     Text("Volume")
-                } footer: {
-                    Text("Raise it if the middle of the slider gets loud too fast: the lower and middle range gets quieter and more of the change moves toward the top. Native uses the speaker's own curve. Applies to \(AppInfo.name)'s slider.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("Tone") {
-                    Picker("Bass Extension", selection: Binding(get: { speaker.bassExtension }, set: speaker.setBassExtension)) {
+                    Picker("Bass Extension", selection: Binding(get: { speaker.bassExtension }, set: { speaker.setBassExtension($0) })) {
                         Text("Less").tag(BassExtension.less)
                         Text("Standard").tag(BassExtension.standard)
                         Text("Extra").tag(BassExtension.extra)
                     }
-                    ValueSlider(title: "Treble", value: speaker.treble, range: -3...3, step: 0.25, commit: speaker.setTreble) {
+                    ValueSlider(title: "Treble", value: speaker.treble, range: -3...3, step: 0.25, commit: { speaker.setTreble($0) }) {
                         $0 == 0 ? "0 dB" : String(format: "%+.2f dB", $0)
                     }
                     ValueSlider(title: "Balance", value: Double(speaker.balance), range: -30...30, step: 1,
@@ -77,13 +74,13 @@ struct SettingsPage: View {
                 }
 
                 Section("Power") {
-                    Picker("Auto Standby", selection: Binding(get: { speaker.standbyMode }, set: speaker.setStandbyMode)) {
+                    Picker("Auto Standby", selection: Binding(get: { speaker.standbyMode }, set: { speaker.setStandbyMode($0) })) {
                         Text("After 20 min (ECO)").tag(StandbyMode.eco)
                         Text("After 30 min").tag(StandbyMode.thirtyMinutes)
                         Text("After 60 min").tag(StandbyMode.sixtyMinutes)
                         Text("Never").tag(StandbyMode.never)
                     }
-                    Picker("Wake On", selection: Binding(get: { speaker.wakeUpSource }, set: speaker.setWakeUpSource)) {
+                    Picker("Wake On", selection: Binding(get: { speaker.wakeUpSource }, set: { speaker.setWakeUpSource($0) })) {
                         Text("Default").tag(WakeUpSource.none)
                         Text("USB Audio").tag(WakeUpSource.usb)
                         Text("TV").tag(WakeUpSource.tv)
@@ -91,7 +88,7 @@ struct SettingsPage: View {
                         Text("Bluetooth").tag(WakeUpSource.bluetooth)
                         Text("Wi‑Fi").tag(WakeUpSource.wifi)
                     }
-                    Picker("Maximum Volume", selection: Binding(get: { speaker.maximumVolume }, set: speaker.setMaximumVolume)) {
+                    Picker("Maximum Volume", selection: Binding(get: { speaker.maximumVolume }, set: { speaker.setMaximumVolume($0) })) {
                         ForEach([40, 50, 60, 70, 80, 90], id: \.self) { Text("\($0)").tag($0) }
                         Text("No Limit").tag(100)
                     }

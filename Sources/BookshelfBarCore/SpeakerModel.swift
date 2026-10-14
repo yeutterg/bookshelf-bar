@@ -69,6 +69,7 @@ public final class SpeakerModel {
     private var discoveryTask: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
     private var volumeWrite: Task<Void, Never>?
+    private var localVolumeUntil = Date.distantPast
     private var retryTask: Task<Void, Never>?
     private var connectTask: Task<Bool, Never>?
     private var connectTaskGeneration: Int?
@@ -406,6 +407,7 @@ public final class SpeakerModel {
     public func setVolume(_ value: Int) {
         guard !isUpdatingFirmware else { return }
         volume = min(max(value, 0), 100)
+        localVolumeUntil = .now + 1
         // Coalesce slider drags: only the latest value is sent.
         volumeWrite?.cancel()
         let target = volume
@@ -729,7 +731,8 @@ public final class SpeakerModel {
 
     private func apply(_ path: KEFPath, _ v: KEFValue) {
         switch path {
-        case .volume: volume = v.int ?? volume
+        // Ignore echoes (often of older values) while the user is moving the slider.
+        case .volume: if Date() > localVolumeUntil { volume = v.int ?? volume }
         case .mute: muted = v.bool ?? muted
         case .physicalSource: source = v.string.flatMap(PhysicalSource.init) ?? source
         case .speakerStatus:

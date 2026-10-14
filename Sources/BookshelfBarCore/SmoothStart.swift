@@ -89,7 +89,12 @@ public final class SmoothStart {
     private var liveMuted = false
     private var intent: VolumeIntent?
 
+    /// While the user is dragging, the device echoes back whole-dB-rounded values; applying them
+    /// would move the slider under the user's hand.
+    private var userAdjustingUntil = Date.distantPast
+
     public func setMacVolume(_ v: Float) {
+        userAdjustingUntil = .now + 0.8
         rememberedVolume = v
         liveVolume = v
         intent?.setTarget(v)
@@ -178,7 +183,7 @@ public final class SmoothStart {
 
         case .volumeChanged(let v):
             // Track the user's choice, but not our own hold/ramp writes or re-arrival transients.
-            if phase == .idle, !armedLow, Date() > ignoreVolumeUntil {
+            if phase == .idle, !armedLow, Date() > ignoreVolumeUntil, Date() > userAdjustingUntil {
                 rememberedVolume = v
                 liveVolume = v
             }
