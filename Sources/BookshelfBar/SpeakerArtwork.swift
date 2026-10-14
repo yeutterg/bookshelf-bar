@@ -25,10 +25,9 @@ struct SpeakerArtwork: View {
                     .shadow(color: .black.opacity(0.24), radius: 8, y: 7)
 
                 if state == .playing || state == .waking {
-                    SpeakerPulse(state: state, stereoDelay: 0, reduceMotion: reduceMotion)
+                    SpeakerPulse(state: state, reduceMotion: reduceMotion)
                         .position(x: width * 0.257, y: height * 0.515)
-                    SpeakerPulse(state: state, stereoDelay: state == .playing ? 0.16 : 0.08,
-                                 reduceMotion: reduceMotion)
+                    SpeakerPulse(state: state, reduceMotion: reduceMotion)
                         .position(x: width * 0.743, y: height * 0.515)
                 }
 
@@ -74,7 +73,6 @@ struct SpeakerArtwork: View {
 /// there is no display link, timer, 3D scene or work at rest.
 private struct SpeakerPulse: View {
     let state: SpeakerState
-    let stereoDelay: Double
     let reduceMotion: Bool
     @State private var expanded = false
 
@@ -87,12 +85,11 @@ private struct SpeakerPulse: View {
                 .scaleEffect(reduceMotion ? 1 : (expanded ? 1.08 : 0.94))
                 .animation(
                     reduceMotion ? nil : .easeInOut(duration: state == .playing ? 0.82 : 1.05)
-                        .repeatForever(autoreverses: true)
-                        .delay(stereoDelay),
+                        .repeatForever(autoreverses: true),
                     value: expanded
                 )
-            ring(delay: stereoDelay)
-            ring(delay: stereoDelay + (state == .waking ? 0.62 : 0.82))
+            ring(delay: 0)
+            ring(delay: state == .waking ? 0.62 : 0.82)
         }
         .frame(width: 46, height: 46)
         .onAppear { expanded = true }

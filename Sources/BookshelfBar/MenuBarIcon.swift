@@ -1,25 +1,34 @@
+import AppKit
 import BookshelfBarCore
 import SwiftUI
 
-/// The compact two-cabinet glyph from the Paper prototype. Motion exists only while a transient
-/// or active playback state is on screen; idle, standby and muted states schedule no work.
+/// Menu bar label. `MenuBarExtra` labels only render `Image` and `Text` (arbitrary shapes come
+/// out empty and the status item disappears), so the drawn glyph is rendered to a template
+/// image per state and cached. Template images follow the menu bar's light/dark appearance.
 struct MenuBarIcon: View {
     let speaker: SpeakerModel
     let smoothStart: SmoothStart
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let state = speaker.visualState(smoothStart)
+        Image(nsImage: MenuBarGlyph.image(for: state))
+            .accessibilityLabel(MenuBarGlyph.label(state))
+    }
+}
+
+/// The compact two-cabinet glyph from the Paper prototype, drawn for one state.
+struct MenuBarGlyph: View {
+    let state: SpeakerState
+
+    var body: some View {
         ZStack {
             HStack(spacing: 2) {
-                MenuBarCabinet(leansLeft: false, emphasized: emphasized(state))
-                MenuBarCabinet(leansLeft: true, emphasized: emphasized(state))
+                MenuBarCabinet(leansLeft: false, emphasized: emphasized)
+                MenuBarCabinet(leansLeft: true, emphasized: emphasized)
             }
-
             if state == .playing || state == .waking || state == .reconnecting {
-                MenuBarActivity(state: state, reduceMotion: reduceMotion)
+                MenuBarActivity()
             }
-
             if state == .muted {
                 Capsule()
                     .fill(.primary)
@@ -28,19 +37,18 @@ struct MenuBarIcon: View {
             }
         }
         .frame(width: 21, height: 16)
-        .opacity(opacity(state))
-        .accessibilityElement(children: .ignore)
-            .accessibilityLabel(label(state))
+        .opacity(opacity)
+        .environment(\.colorScheme, .light)   // .primary = black, as a template image expects
     }
 
-    private func emphasized(_ state: SpeakerState) -> Bool {
+    private var emphasized: Bool {
         switch state {
         case .on, .playing, .waking: true
         case .offline, .reconnecting, .standby, .muted: false
         }
     }
 
-    private func opacity(_ state: SpeakerState) -> Double {
+    private var opacity: Double {
         switch state {
         case .offline: 0.38
         case .standby: 0.58
@@ -49,16 +57,28 @@ struct MenuBarIcon: View {
         }
     }
 
-    private func label(_ state: SpeakerState) -> String {
+    static func label(_ state: SpeakerState) -> String {
         switch state {
-        case .offline: "KEF speakers offline"
-        case .reconnecting: "KEF speakers reconnecting"
-        case .standby: "KEF speakers in standby"
-        case .waking: "KEF speakers powering up"
-        case .on: "KEF speakers on"
-        case .playing: "KEF speakers playing"
-        case .muted: "KEF speakers muted"
+        case .offline: "Speakers offline"
+        case .reconnecting: "Speakers reconnecting"
+        case .standby: "Speakers in standby"
+        case .waking: "Speakers powering up"
+        case .on: "Speakers on"
+        case .playing: "Speakers playing"
+        case .muted: "Speakers muted"
         }
+    }
+
+    @MainActor private static var cache: [SpeakerState: NSImage] = [:]
+
+    @MainActor static func image(for state: SpeakerState) -> NSImage {
+        if let cached = cache[state] { return cached }
+        let renderer = ImageRenderer(content: MenuBarGlyph(state: state))
+        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+        let image = renderer.nsImage ?? NSImage(systemSymbolName: "hifispeaker.2", accessibilityDescription: nil)!
+        image.isTemplate = true
+        cache[state] = image
+        return image
     }
 }
 
@@ -90,30 +110,21 @@ private struct MenuBarCabinet: View {
     }
 }
 
+/// Two soft rings next to the drivers for playing / waking. Static: it's rendered into the
+/// menu bar image.
 private struct MenuBarActivity: View {
-    let state: SpeakerState
-    let reduceMotion: Bool
-    @State private var expanded = false
-
     var body: some View {
         ZStack {
-            activityRing(x: -4.75, delay: 0)
-            activityRing(x: 4.75, delay: state == .playing ? 0.32 : 0)
+            ring(x: -4.75)
+            ring(x: 4.75)
         }
-        .onAppear { expanded = true }
     }
 
-    private func activityRing(x: CGFloat, delay: Double) -> some View {
+    private func ring(x: CGFloat) -> some View {
         Circle()
-            .stroke(.primary.opacity(reduceMotion ? 0.32 : (expanded ? 0 : 0.48)), lineWidth: 0.85)
+            .stroke(.primary.opacity(0.45), lineWidth: 0.85)
             .frame(width: 5.2, height: 5.2)
-            .scaleEffect(reduceMotion ? 1.25 : (expanded ? 1.65 : 0.82))
+            .scaleEffect(1.5)
             .offset(x: x, y: -1.2)
-            .animation(
-                reduceMotion ? nil : .easeOut(duration: state == .playing ? 1.35 : 0.9)
-                    .delay(delay)
-                    .repeatForever(autoreverses: false),
-                value: expanded
-            )
     }
 }

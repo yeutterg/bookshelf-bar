@@ -223,7 +223,25 @@ struct LocalNetworkPrompt: View {
     }
 }
 
-if let index = CommandLine.arguments.firstIndex(of: "--artwork-snapshot") {
+if let index = CommandLine.arguments.firstIndex(of: "--menubar-snapshot"), index + 1 < CommandLine.arguments.count {
+    // Development aid: write the menu bar glyph for each state side by side.
+    MainActor.assumeIsolated {
+        let states: [SpeakerState] = [.offline, .standby, .on, .playing, .muted]
+        let images = states.map { MenuBarGlyph.image(for: $0) }
+        let size = images[0].size
+        let sheet = NSImage(size: NSSize(width: size.width * CGFloat(images.count) + 8 * CGFloat(images.count), height: size.height), flipped: false) { _ in
+            NSColor.white.setFill(); NSRect(x: 0, y: 0, width: 999, height: 999).fill()
+            for (i, image) in images.enumerated() {
+                image.draw(in: NSRect(x: CGFloat(i) * (size.width + 8), y: 0, width: size.width, height: size.height))
+            }
+            return true
+        }
+        if let tiff = sheet.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
+        }
+        print("glyph size \(size)")
+    }
+} else if let index = CommandLine.arguments.firstIndex(of: "--artwork-snapshot") {
     guard index + 1 < CommandLine.arguments.count else {
         fatalError("--artwork-snapshot requires an output PNG path")
     }
