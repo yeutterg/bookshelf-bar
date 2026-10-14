@@ -16,6 +16,9 @@ cp "$BIN/KEFBar" "$APP/Contents/MacOS/KEFBar"
 cp -R "$BIN/KEFBar_KEFBar.bundle" "$APP/Contents/Resources/"
 sed "s/__VERSION__/$VERSION/" Resources/Info.plist > "$APP/Contents/Info.plist"
 
-# Ad-hoc signature so macOS keeps permissions (Local Network) stable between builds.
-codesign --force --sign - --timestamp=none "$APP"
+# Sign with an Apple Development identity when available, so macOS treats rebuilds as the same
+# app and keeps permissions like Local Network. Falls back to ad-hoc (permission re-prompts).
+IDENTITY=${SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/ {print $2; exit}')}
+codesign --force --sign "${IDENTITY:--}" --timestamp=none "$APP"
+echo "Signed with: ${IDENTITY:-ad-hoc}"
 echo "Built $APP"

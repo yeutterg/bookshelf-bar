@@ -41,6 +41,8 @@ public final class SpeakerModel {
     public private(set) var profileName = ""
 
     public var lastError: String?
+    /// macOS is blocking local network access (the app needs the Local Network permission).
+    public private(set) var localNetworkDenied = false
 
     /// While the popover is visible the app always streams events; otherwise it stops once the
     /// speaker is in standby, so an idle Mac holds no connection at all.
@@ -76,7 +78,10 @@ public final class SpeakerModel {
                 guard let self else { return }
                 self.speakers = list
                 // Reconnect only to the speaker the user chose; never pick one on our own.
-                if self.info == nil, let saved = self.defaults.string(forKey: Self.savedSpeakerKey),
+                // Also retry a failed connection when the speaker (re)appears, e.g. right after the
+                // Local Network permission is granted.
+                let failed = if case .unreachable = self.connection { true } else { false }
+                if self.info == nil || failed, let saved = self.defaults.string(forKey: Self.savedSpeakerKey),
                    let match = list.first(where: { $0.kefId == saved }) {
                     await self.select(match)
                 }
@@ -135,7 +140,7 @@ public final class SpeakerModel {
             await connect(host: try await KEFDiscovery.resolveHost(for: speaker))
         } catch {
             log.error("resolve failed: \(error.localizedDescription, privacy: .public)")
-            connection = .unreachable(error.localizedDescription)
+            noteFailure(error)
         }
     }
 
@@ -151,11 +156,12 @@ public final class SpeakerModel {
         do {
             try await refresh()
             connection = .connected
+            localNetworkDenied = false
             log.info("connected to \(host, privacy: .public)")
             updateEventStream(force: true)
         } catch {
             log.error("connect to \(host, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
-            connection = .unreachable(error.localizedDescription)
+            noteFailure(error)
         }
     }
 
@@ -236,6 +242,23 @@ public final class SpeakerModel {
     }
 
     // MARK: Private
+
+    private func noteFailure(_ error: Error) {
+        // A blocked local network surfaces either from Network.framework or, for HTTP, as
+        // URLSession's "not connected to the internet".
+        // A timeout while resolving is how a missing permission usually looks, so treat it the same.
+        let kef = error as? KEFError
+        localNetworkDenied = kef == .localNetworkDenied
+            || { if case .timedOut = kef { true } else { false } }()
+            || (error as? URLError)?.code == .notConnectedToInternet
+        connection = .unreachable(error.localizedDescription)
+    }
+
+    /// Retry after the user grants the Local Network permission.
+    public func retry() {
+        guard let info else { return }
+        Task { await select(info) }
+    }
 
     private func write(_ path: KEFPath, _ value: KEFValue) {
         Task { await perform { try await $0.set(path, value) } }

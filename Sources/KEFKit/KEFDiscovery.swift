@@ -74,31 +74,47 @@ public final class KEFDiscovery: @unchecked Sendable {
         defer { connection.cancel() }
         return try await withThrowingTaskGroup(of: String.self) { group in
             group.addTask {
-                try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
-                    let once = Once()
-                    connection.stateUpdateHandler = { state in
-                        switch state {
-                        case .ready:
-                            if case .hostPort(let host, _)? = connection.currentPath?.remoteEndpoint {
-                                once.run { cont.resume(returning: Self.format(host)) }
-                            } else {
-                                once.run { cont.resume(throwing: KEFError.unexpectedResponse("no address")) }
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
+                        let once = Once()
+                        connection.stateUpdateHandler = { state in
+                            switch state {
+                            case .ready:
+                                if case .hostPort(let host, _)? = connection.currentPath?.remoteEndpoint {
+                                    once.run { cont.resume(returning: Self.format(host)) }
+                                } else {
+                                    once.run { cont.resume(throwing: KEFError.unexpectedResponse("no address")) }
+                                }
+                            case .waiting(let error):
+                                // macOS reports a missing Local Network permission as a waiting path.
+                                if connection.currentPath?.unsatisfiedReason == .localNetworkDenied {
+                                    once.run { cont.resume(throwing: KEFError.localNetworkDenied) }
+                                } else {
+                                    once.run { cont.resume(throwing: error) }
+                                }
+                            case .failed(let error):
+                                once.run { cont.resume(throwing: error) }
+                            case .cancelled:
+                                once.run { cont.resume(throwing: CancellationError()) }
+                            default: break
                             }
-                        case .failed(let error):
-                            once.run { cont.resume(throwing: error) }
-                        default: break
                         }
+                        connection.start(queue: DispatchQueue(label: "KEFResolve"))
                     }
-                    connection.start(queue: DispatchQueue(label: "KEFResolve"))
+                } onCancel: {
+                    connection.cancel()
                 }
             }
             group.addTask {
                 try await Task.sleep(for: timeout)
-                throw KEFError.unexpectedResponse("timed out resolving \(speaker.name)")
+                // The denial doesn't always arrive as a state change; check the path directly.
+                if connection.currentPath?.unsatisfiedReason == .localNetworkDenied {
+                    throw KEFError.localNetworkDenied
+                }
+                throw KEFError.timedOut(speaker.name)
             }
-            let host = try await group.next()!
-            group.cancelAll()
-            return host
+            defer { group.cancelAll() }
+            return try await group.next()!
         }
     }
 

@@ -5,6 +5,8 @@ public enum KEFError: Error, LocalizedError, Equatable {
     case speaker(name: String, message: String)
     case unexpectedResponse(String)
     case unauthorized
+    case localNetworkDenied
+    case timedOut(String)
 
     public var errorDescription: String? {
         switch self {
@@ -12,6 +14,8 @@ public enum KEFError: Error, LocalizedError, Equatable {
         case .speaker(let n, let m): "\(n): \(m)"
         case .unexpectedResponse(let s): "Unexpected response: \(s.prefix(200))"
         case .unauthorized: "The speaker rejected the request signature. Check the speaker password."
+        case .localNetworkDenied: "KEF Bar isn't allowed to access your local network."
+        case .timedOut(let what): "Timed out reaching \(what)."
         }
     }
 }

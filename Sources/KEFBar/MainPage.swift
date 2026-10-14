@@ -23,7 +23,11 @@ struct MainPage: View {
                 Section { SmoothStartRow(smoothStart: smoothStart) }
                 Section { DisclosureRow(title: "Sound & Power", systemImage: "slider.horizontal.3", action: openSettings) }
             case .unreachable:
-                Section { ManualConnectRows(speaker: speaker) }
+                if speaker.localNetworkDenied {
+                    LocalNetworkSection(speaker: speaker)
+                } else {
+                    Section { ManualConnectRows(speaker: speaker) }
+                }
             case .searching, .connecting:
                 EmptyView()
             }
@@ -132,8 +136,7 @@ struct VolumeRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Button(action: speaker.toggleMute) {
-                Image(systemName: speaker.muted ? "speaker.slash.fill" : "speaker.fill")
-                    .contentTransition(.symbolEffect(.replace))
+                PaperIcon(speaker.muted ? "icon-volume-muted" : "icon-volume")
                     .frame(width: 18)
             }
             .buttonStyle(.borderless)
@@ -162,8 +165,11 @@ struct InputRows: View {
             let selected = speaker.isOn && speaker.source == input
             Button { speaker.setSource(input) } label: {
                 HStack {
-                    Label(input.label, systemImage: input.symbol)
-                        .symbolVariant(selected ? .fill : .none)
+                    Label {
+                        Text(input.label)
+                    } icon: {
+                        PaperIcon(input.icon).foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+                    }
                     Spacer()
                     if selected { Image(systemName: "checkmark").foregroundStyle(.tint).fontWeight(.semibold) }
                 }
@@ -190,16 +196,15 @@ extension PhysicalSource {
         }
     }
 
-    var symbol: String {
+    /// Icons from the Paper design (Resources/icon-*.svg).
+    var icon: String {
         switch self {
-        case .wifi: "wifi"
-        case .bluetooth: "dot.radiowaves.left.and.right"
-        case .tv: "tv"
-        case .optical: "smallcircle.filled.circle"
-        case .usb: "cable.connector.horizontal"
-        case .analog: "headphones"
-        case .coaxial: "cable.coaxial"
-        case .standby, .powerOn: "power"
+        case .wifi: "icon-wifi"
+        case .bluetooth: "icon-bluetooth"
+        case .tv: "icon-tv"
+        case .optical: "icon-optical"
+        case .usb: "icon-usb"
+        case .analog, .coaxial, .standby, .powerOn: "icon-aux"
         }
     }
 }
@@ -228,6 +233,37 @@ struct SmoothStartRow: View {
         case .waking: return "Waking speakers, holding audio…"
         case .settling: return "Restoring volume…"
         }
+    }
+}
+
+// MARK: Local Network permission
+
+struct LocalNetworkSection: View {
+    let speaker: SpeakerModel
+
+    var body: some View {
+        Section {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Can't Reach the Speakers")
+                    Text("Make sure KEF Bar is allowed in Privacy & Security › Local Network, and that the speakers are on and on the same network.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } icon: {
+                Image(systemName: "network").foregroundStyle(.orange)
+            }
+            HStack {
+                Button("Open Privacy Settings") {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!)
+                }
+                .buttonStyle(.borderedProminent)
+                Spacer()
+                Button("Try Again", action: speaker.retry)
+            }
+        }
+        Section { DisclosureGroup("Enter IP Address") { ManualConnectRows(speaker: speaker) } }
     }
 }
 
