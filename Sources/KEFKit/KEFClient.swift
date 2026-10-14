@@ -7,6 +7,8 @@ public enum KEFError: Error, LocalizedError, Equatable {
     case unauthorized
     case localNetworkDenied
     case timedOut(String)
+    /// The host answered but it's a different speaker (e.g. its IP was reassigned).
+    case wrongSpeaker
 
     public var errorDescription: String? {
         switch self {
@@ -16,6 +18,7 @@ public enum KEFError: Error, LocalizedError, Equatable {
         case .unauthorized: "The speaker rejected the request signature. Check the speaker password."
         case .localNetworkDenied: "KEF Bar isn't allowed to access your local network."
         case .timedOut(let what): "Timed out reaching \(what)."
+        case .wrongSpeaker: "A different speaker answered at that address."
         }
     }
 }
@@ -48,12 +51,13 @@ public final class KEFClient: Sendable {
 
     private let authModeCache = Cache<String>()
 
-    public init(host: String, password: String = "", signing: Signing = .automatic) {
+    public init(host: String, password: String = "", signing: Signing = .automatic, timeout: TimeInterval = 5) {
         self.host = host
         self.password = password
         self.signing = signing
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 5
+        config.timeoutIntervalForRequest = timeout
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.waitsForConnectivity = false
         config.httpMaximumConnectionsPerHost = 4
         session = URLSession(configuration: config)

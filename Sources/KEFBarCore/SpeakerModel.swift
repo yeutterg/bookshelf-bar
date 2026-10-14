@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import KEFKit
+import Network
 import Observation
 import os
 
@@ -40,13 +42,22 @@ public final class SpeakerModel {
     public private(set) var maximumVolume = 100
     public private(set) var profileName = ""
 
+    /// Connected before, currently re-establishing (controls stay up; shown as "Reconnecting…").
+    public private(set) var reconnecting = false
+
     public var lastError: String?
     /// macOS is blocking local network access (the app needs the Local Network permission).
     public private(set) var localNetworkDenied = false
 
     /// While the popover is visible the app always streams events; otherwise it stops once the
     /// speaker is in standby, so an idle Mac holds no connection at all.
-    public var popoverVisible = false { didSet { updateEventStream() } }
+    public var popoverVisible = false {
+        didSet {
+            updateEventStream()
+            // Opening the popover after a quiet stretch: check the connection is still good.
+            if popoverVisible, Date().timeIntervalSince(lastContact) > 15 { Task { await ensureConnected("popover") } }
+        }
+    }
 
     public var isOn: Bool { status == .powerOn }
     public var finish: KEFFinish { info?.finish ?? .unknown }
@@ -56,6 +67,14 @@ public final class SpeakerModel {
     private var eventTask: Task<Void, Never>?
     private var volumeWrite: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
+    private var connectTask: Task<Bool, Never>?
+    private var pathMonitor: NWPathMonitor?
+    private var wakeObserver: NSObjectProtocol?
+    private var lastContact = Date.distantPast
+    private var lastInterfaces: [String] = []
+    private var failingSince: Date?
+    private var everConnected = false
+    private static func hostKey(_ kefId: String) -> String { "host.\(kefId)" }
     private let defaults = UserDefaults.standard
     private static let savedSpeakerKey = "selectedKefId"
     private static let savedHostKey = "manualHost"
@@ -73,23 +92,23 @@ public final class SpeakerModel {
         checkLocalNetworkAccess()
         let savedId = defaults.string(forKey: Self.savedSpeakerKey)
         needsSetup = savedId == nil && defaults.string(forKey: Self.savedHostKey) == nil
-        if let manual = defaults.string(forKey: Self.savedHostKey) {
-            Task { await connect(host: manual) }
-        }
+        // Connect straight away from the remembered address; don't wait for Bonjour.
+        if !needsSetup { Task { await ensureConnected("launch") } }
+
         discoveryTask = Task { [weak self] in
             for await list in KEFDiscovery().speakers() {
                 guard let self else { return }
                 self.speakers = list
-                // Reconnect only to the speaker the user chose; never pick one on our own.
-                // Also retry a failed connection when the speaker (re)appears, e.g. right after the
-                // Local Network permission is granted.
-                let failed = if case .unreachable = self.connection { true } else { false }
-                if self.info == nil || failed, let saved = self.defaults.string(forKey: Self.savedSpeakerKey),
+                // Only ever the speaker the user chose. Keep its TXT info fresh and use a
+                // (re)appearance as a cue to reconnect if we're not healthy.
+                if let saved = self.defaults.string(forKey: Self.savedSpeakerKey),
                    let match = list.first(where: { $0.kefId == saved }) {
-                    await self.select(match)
+                    self.info = match
+                    if self.connection != .connected || self.reconnecting { await self.ensureConnected("discovered") }
                 }
             }
         }
+        startMonitoringNetwork()
     }
 
     /// Setup: remember `speaker` (by its permanent kefId) and connect to it.
@@ -103,6 +122,9 @@ public final class SpeakerModel {
     public func forget() {
         eventTask?.cancel()
         eventTask = nil
+        if let id = info?.kefId ?? defaults.string(forKey: Self.savedSpeakerKey) { defaults.removeObject(forKey: Self.hostKey(id)) }
+        everConnected = false
+        reconnecting = false
         defaults.removeObject(forKey: Self.savedSpeakerKey)
         defaults.removeObject(forKey: Self.savedHostKey)
         client = nil
@@ -137,14 +159,7 @@ public final class SpeakerModel {
     func select(_ speaker: KEFSpeakerInfo) async {
         info = speaker
         defaults.set(speaker.kefId, forKey: Self.savedSpeakerKey)
-        connection = .connecting(speaker.name)
-        log.info("resolving \(speaker.name, privacy: .public)")
-        do {
-            await connect(host: try await KEFDiscovery.resolveHost(for: speaker))
-        } catch {
-            log.error("resolve failed: \(error.localizedDescription, privacy: .public)")
-            noteFailure(error)
-        }
+        await ensureConnected("selected")
     }
 
     /// Manual fallback when Bonjour is blocked (guest networks, VLANs).
@@ -153,19 +168,123 @@ public final class SpeakerModel {
             defaults.set(host, forKey: Self.savedHostKey)
             needsSetup = false
         }
-        self.host = host
-        client = KEFClient(host: host, password: SpeakerPassword.load(for: info?.kefId) ?? "")
-        connection = .connecting(info?.name ?? host)
+        await ensureConnected("manual host")
+    }
+
+    // MARK: Connection management
+
+    /// Makes sure we have a working connection, reconnecting if needed. Single-flight: concurrent
+    /// callers share one attempt. Returns whether the speaker is reachable now.
+    @discardableResult
+    public func ensureConnected(_ reason: String) async -> Bool {
+        if let running = connectTask { return await running.value }
+        let task = Task { await self.attemptConnection(reason) }
+        connectTask = task
+        let ok = await task.value
+        connectTask = nil
+        return ok
+    }
+
+    private func attemptConnection(_ reason: String) async -> Bool {
+        let kefId = info?.kefId ?? defaults.string(forKey: Self.savedSpeakerKey)
+        let manual = defaults.string(forKey: Self.savedHostKey)
+        if !everConnected, connection != .connected { connection = .connecting(info?.name ?? manual ?? "speakers") }
+        log.info("connect (\(reason, privacy: .public)) cached=\(kefId.flatMap { self.defaults.string(forKey: Self.hostKey($0)) } ?? manual ?? "-", privacy: .public)")
         do {
+            let found: String
+            if let kefId {
+                found = try await KEFLocator.locate(kefId: kefId,
+                                                    cachedHost: defaults.string(forKey: Self.hostKey(kefId)) ?? manual,
+                                                    bonjour: info)
+            } else if let manual {
+                _ = try await KEFClient(host: manual, timeout: 3).status()
+                found = manual
+            } else {
+                return false
+            }
+            if found != host || client == nil {
+                host = found
+                client = KEFClient(host: found, password: SpeakerPassword.load(for: kefId) ?? "")
+                eventTask?.cancel()
+                eventTask = nil
+            }
             try await refresh()
-            connection = .connected
-            localNetworkDenied = false
-            restorePendingWakeSource()
-            log.info("connected to \(host, privacy: .public)")
-            updateEventStream(force: true)
+            markHealthy(found, kefId: kefId)
+            return true
         } catch {
-            log.error("connect to \(host, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
-            noteFailure(error)
+            markUnhealthy(error)
+            return false
+        }
+    }
+
+    private func markHealthy(_ host: String, kefId: String?) {
+        if let kefId { defaults.set(host, forKey: Self.hostKey(kefId)) }
+        let wasDown = connection != .connected || reconnecting
+        connection = .connected
+        reconnecting = false
+        failingSince = nil
+        lastContact = .now
+        localNetworkDenied = false
+        retryTask?.cancel()
+        retryTask = nil
+        if wasDown { log.info("connected to \(host, privacy: .public)") }
+        if !everConnected { restorePendingWakeSource() }
+        everConnected = true
+        updateEventStream(force: true)
+    }
+
+    private func markUnhealthy(_ error: Error) {
+        log.error("connection problem: \(error.localizedDescription, privacy: .public)")
+        if (error as? KEFError) == .localNetworkDenied || (error as? URLError)?.code == .notConnectedToInternet {
+            localNetworkDenied = true
+        } else if let probeHost = host ?? info.flatMap({ defaults.string(forKey: Self.hostKey($0.kefId)) })
+                    ?? defaults.string(forKey: Self.savedHostKey) {
+            // Distinguish "permission off" from "speaker not answering" with a direct probe.
+            Task {
+                if await KEFDiscovery.probeLocalNetwork(host: probeHost) == .denied {
+                    log.error("local network access denied for this app")
+                    localNetworkDenied = true
+                    connection = .unreachable("Local network access denied")
+                }
+            }
+        }
+        let since = failingSince ?? .now
+        failingSince = since
+        // Ride out short blips with the controls still up; only call it unreachable after a while.
+        let grace: TimeInterval = everConnected ? 20 : 12
+        if Date().timeIntervalSince(since) >= grace || localNetworkDenied {
+            connection = .unreachable(error.localizedDescription)
+            reconnecting = false
+        } else if connection == .connected {
+            reconnecting = true
+        }
+        scheduleRetry()
+    }
+
+    /// Network path changes (Wi‑Fi rejoin, interface switch) and Mac wake are the moments a
+    /// connection most often goes stale; reconnect right away instead of waiting for a failure.
+    private func startMonitoringNetwork() {
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let interfaces = path.availableInterfaces.map(\.name)
+            let satisfied = path.status == .satisfied
+            Task { @MainActor in
+                guard let self else { return }
+                let changed = interfaces != self.lastInterfaces
+                self.lastInterfaces = interfaces
+                guard satisfied, changed, !self.needsSetup, self.everConnected else { return }
+                await self.ensureConnected("network change")
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "KEFBar.path"))
+        pathMonitor = monitor
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1.5)) // let Wi‑Fi come back
+                guard let self, !self.needsSetup else { return }
+                await self.ensureConnected("mac wake")
+            }
         }
     }
 
@@ -306,32 +425,29 @@ public final class SpeakerModel {
 
     // MARK: Private
 
-    private func noteFailure(_ error: Error) {
-        // A blocked local network surfaces either from Network.framework or, for HTTP, as
-        // URLSession's "not connected to the internet".
-        // A timeout while resolving is how a missing permission usually looks, so treat it the same.
-        let kef = error as? KEFError
-        localNetworkDenied = kef == .localNetworkDenied
-            || { if case .timedOut = kef { true } else { false } }()
-            || (error as? URLError)?.code == .notConnectedToInternet
-        connection = .unreachable(error.localizedDescription)
-        scheduleRetry()
-    }
+    public static let localNetworkSettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!
 
     /// Retry now (e.g. after the user grants the Local Network permission).
     public func retry() {
         checkLocalNetworkAccess()
-        guard let info else { return }
-        Task { await select(info) }
+        Task { await ensureConnected("retry") }
     }
 
     /// Asks macOS for Local Network access (shows the system prompt the first time). A denial
     /// can't be re-prompted, so the UI then points at System Settings.
     public func checkLocalNetworkAccess() {
         Task {
-            let access = await KEFDiscovery.requestLocalNetworkAccess()
+            // Browsing triggers the system prompt on first run; a direct probe to the remembered
+            // address is the definitive check once we have one.
+            var access = await KEFDiscovery.requestLocalNetworkAccess()
+            let known = info.flatMap { defaults.string(forKey: Self.hostKey($0.kefId)) }
+                ?? defaults.string(forKey: Self.savedSpeakerKey).flatMap { defaults.string(forKey: Self.hostKey($0)) }
+            if access != .denied, let known { access = await KEFDiscovery.probeLocalNetwork(host: known) }
             log.info("local network access: \(String(describing: access), privacy: .public)")
-            if access == .denied { localNetworkDenied = true }
+            if access == .denied {
+                localNetworkDenied = true
+                if !everConnected { connection = .unreachable("Local network access denied") }
+            }
             if access == .granted, localNetworkDenied {
                 localNetworkDenied = false
                 retry()
@@ -339,16 +455,20 @@ public final class SpeakerModel {
         }
     }
 
-    /// While unreachable, retry with backoff so the app recovers by itself once the network or
-    /// permission comes back. Stops as soon as a connection succeeds.
+    /// While unhealthy, keep retrying with backoff (1 s up to 30 s) so the app recovers by
+    /// itself. Stops as soon as a connection succeeds.
     private func scheduleRetry() {
         guard retryTask == nil else { return }
         retryTask = Task { [weak self] in
-            var delay: Double = 2
+            var delay: Double = 1
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(delay))
-                guard let self, case .unreachable = self.connection, let info = self.info else { break }
-                await self.select(info)
+                // While blocked by the Local Network setting, check often so flipping the toggle
+                // in System Settings reconnects within a few seconds.
+                let wait = (self?.localNetworkDenied ?? false) ? 3 : delay
+                try? await Task.sleep(for: .seconds(wait))
+                guard let self, !Task.isCancelled else { return }
+                if self.connection == .connected, !self.reconnecting { break }
+                if await self.ensureConnected("retry") { break }
                 delay = min(delay * 2, 30)
             }
             self?.retryTask = nil
@@ -359,14 +479,27 @@ public final class SpeakerModel {
         Task { await perform { try await $0.set(path, value) } }
     }
 
+    /// Runs a command; on a connection failure, reconnects (possibly to a new address) and
+    /// retries it once.
     private func perform(_ action: @Sendable (KEFClient) async throws -> Void) async {
-        guard let client else { return }
+        guard let client else { await ensureConnected("command without connection"); return }
         do {
             try await action(client)
             lastError = nil
-        } catch {
+            lastContact = .now
+        } catch let error as KEFError where error == .unauthorized {
             lastError = error.localizedDescription
-            try? await refresh()
+        } catch {
+            guard await ensureConnected("command failed"), let fresh = self.client else {
+                lastError = error.localizedDescription
+                return
+            }
+            do {
+                try await action(fresh)
+                lastError = nil
+            } catch {
+                lastError = error.localizedDescription
+            }
         }
     }
 
@@ -383,9 +516,14 @@ public final class SpeakerModel {
     private func startEvents() {
         guard let client else { return }
         let paths: [KEFPath] = [.physicalSource, .speakerStatus, .volume, .mute, .powerTarget]
+        // A failing long-poll is the earliest sign the connection went stale.
+        let onFailure: @Sendable (Error) -> Void = { [weak self] _ in
+            Task { @MainActor in await self?.ensureConnected("event stream") }
+        }
         eventTask = Task { [weak self] in
-            for await event in client.events(paths) {
+            for await event in client.events(paths, onFailure: onFailure) {
                 guard let self, let v = event.value else { continue }
+                self.lastContact = .now
                 self.apply(event.path, v)
             }
         }

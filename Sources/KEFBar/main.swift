@@ -15,6 +15,39 @@ final class AppState {
         smoothStart.start()
         keepAwake.start()
         listenForCommands()
+        watchLocalNetworkPermission()
+    }
+
+    private var askedForLocalNetwork = false
+
+    /// macOS shows its Local Network prompt only once per app and offers no API to show it again.
+    /// When access turns out to be blocked, ask with our own alert instead, pointing at the
+    /// exact Settings pane. Once per launch, so it never nags.
+    private func watchLocalNetworkPermission() {
+        withObservationTracking {
+            _ = speaker.localNetworkDenied
+        } onChange: {
+            Task { @MainActor in
+                let state = AppState.shared
+                if state.speaker.localNetworkDenied, !state.askedForLocalNetwork {
+                    state.askedForLocalNetwork = true
+                    state.showLocalNetworkAlert()
+                }
+                state.watchLocalNetworkPermission()
+            }
+        }
+    }
+
+    private func showLocalNetworkAlert() {
+        let alert = NSAlert()
+        alert.messageText = "KEF Bar needs Local Network access"
+        alert.informativeText = "macOS is blocking KEF Bar from reaching your speakers on this network. Turn on KEF Bar in Privacy & Security › Local Network. KEF Bar reconnects as soon as it's allowed."
+        alert.addButton(withTitle: "Open Privacy Settings")
+        alert.addButton(withTitle: "Not Now")
+        NSApp.activate()
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(SpeakerModel.localNetworkSettingsURL)
+        }
     }
 
     /// Local automation hook (Shortcuts, scripts, tests): post the distributed notification
@@ -96,4 +129,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-KEFBarApp.main()
+if let index = CommandLine.arguments.firstIndex(of: "--artwork-snapshot") {
+    guard index + 1 < CommandLine.arguments.count else {
+        fatalError("--artwork-snapshot requires an output PNG path")
+    }
+    try writeArtworkSnapshot(to: CommandLine.arguments[index + 1])
+} else {
+    KEFBarApp.main()
+}

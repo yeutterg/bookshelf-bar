@@ -76,7 +76,7 @@ def material(name,hexcolor):
 palettes={
     'satin':['58616B','626E78','313940','7A8791','B6C2C9','56636F','34414D'],
     'clay':['71777B','7B8388','414649','929A9C','C4CAC9','737D80','4C5659'],
-    'illustrated':['41474B','4C545A','303E49','91A6B2','D4DFE1','647A88','3A515E'],
+    'illustrated':['41474B','4C545A','252729','505254','707274','3D4043','3A515E'],
 }
 palette=palettes[style]
 if style=='illustrated' and finish=='olive':
@@ -135,7 +135,11 @@ def speaker(name,x,angle):
     parent.location.x=x;parent.rotation_euler.z=math.radians(angle)
     return parent
 
-if layout=='pair': speakers=[speaker('Left',-.116,-18),speaker('Right',.116,18)]
+if layout=='pair':
+    # Approved C: left baffle aims right, right baffle aims left, exposing the outer sides.
+    # Preserve the earlier A/B comparison poses exactly.
+    toe_in_degrees=11 if style=='illustrated' else -18
+    speakers=[speaker('Left',-.116,toe_in_degrees),speaker('Right',.116,-toe_in_degrees)]
 else:speakers=[speaker('Angle study',0,35)]
 def look(obj,point):obj.rotation_euler=(Vector(point)-obj.location).to_track_quat('-Z','Y').to_euler()
 camdata=bpy.data.cameras.new('Camera');cam=bpy.data.objects.new('Camera',camdata);bpy.context.collection.objects.link(cam)

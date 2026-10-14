@@ -12,12 +12,12 @@ struct MainPage: View {
     var body: some View {
         // Every group has its header outside the box, System Settings style.
         PageForm {
-            if speaker.connection == .connected {
-                Section("Volume") { VolumeRow(speaker: speaker, smoothStart: smoothStart) }
-            }
             Section(speaker.info?.name ?? "Speakers") {
                 PowerRow(speaker: speaker, smoothStart: smoothStart)
-                SpeakerArtwork(modelName: speaker.info?.modelName ?? "", dimmed: !speaker.isOn || speaker.connection != .connected,
+                if speaker.connection == .connected {
+                    VolumeRow(speaker: speaker, smoothStart: smoothStart)
+                }
+                SpeakerArtwork(finish: speaker.finish, dimmed: !speaker.isOn || speaker.connection != .connected,
                                muted: speaker.isOn && speaker.muted)
                     .frame(height: 140)
                     .frame(maxWidth: .infinity)
@@ -71,69 +71,41 @@ struct PowerRow: View {
             Toggle(isOn: Binding(get: { speaker.isOn }, set: { _ in speaker.togglePower() })) {
                 Label {
                     Text("Power")
-                    HStack(spacing: 6) {
-                        Text(status)
-                        if smoothStart.phase != .idle { ProgressView().controlSize(.mini) }
+                    // Only transient states get a subtitle; on/off is the switch itself.
+                    if let status {
+                        HStack(spacing: 6) {
+                            Text(status)
+                            ProgressView().controlSize(.mini)
+                        }
+                        .lineLimit(1)
                     }
-                    .lineLimit(1)
                 } icon: {
                     Image(systemName: "power")
                 }
             }
             .toggleStyle(.switch)
+            .disabled(speaker.reconnecting)
         } else {
             HStack(spacing: 8) {
                 if case .unreachable = speaker.connection {} else { ProgressView().controlSize(.small) }
-                Text(status).foregroundStyle(.secondary)
+                Text(offlineStatus).foregroundStyle(.secondary)
             }
         }
     }
 
-    private var status: String {
+    private var status: String? {
+        if speaker.reconnecting { return "Reconnecting…" }
+        if smoothStart.phase != .idle { return "Waking…" }
+        return nil
+    }
+
+    private var offlineStatus: String {
         switch speaker.connection {
-        case .searching: return "Looking for speakers…"
-        case .connecting: return "Connecting…"
-        case .unreachable: return "Not found"
-        case .connected:
-            if smoothStart.phase != .idle { return "Waking…" }
-            guard speaker.isOn else { return "Standby" }
-            return speaker.muted ? "\(speaker.source.label) · Muted" : "On · \(speaker.source.label)"
+        case .searching: "Looking for speakers…"
+        case .connecting: "Connecting…"
+        case .unreachable: "Not reachable"
+        case .connected: ""
         }
-    }
-}
-
-/// The rendered speaker pair: dimmed in standby, full colour when on. One flag drives one
-/// animation so the standby ↔ on transition is a single smooth fade.
-struct SpeakerArtwork: View {
-    let modelName: String
-    let dimmed: Bool
-    let muted: Bool
-
-    var body: some View {
-        ZStack {
-            image
-                .resizable()
-                .scaledToFit()
-                .saturation(dimmed ? 0.35 : 1)
-                .brightness(dimmed ? -0.2 : 0)
-                .shadow(color: .black.opacity(0.3), radius: 8, y: 8)
-            Image(systemName: "speaker.slash.fill")
-                .font(.title3)
-                .padding(10)
-                .background(.regularMaterial, in: Circle())
-                .opacity(muted ? 1 : 0)
-        }
-        .animation(.easeInOut(duration: 0.45), value: dimmed)
-        .animation(.easeInOut(duration: 0.2), value: muted)
-        .accessibilityHidden(true)
-    }
-
-    private var image: Image {
-        let name = modelName == "LSX II" ? "speakers-lsxii-green" : "speakers-graphite-grey"
-        if let url = Bundle.module.url(forResource: name, withExtension: "png"), let ns = NSImage(contentsOf: url) {
-            return Image(nsImage: ns)
-        }
-        return Image(systemName: "hifispeaker.2")
     }
 }
 
@@ -285,8 +257,8 @@ struct LocalNetworkSection: View {
         Section {
             Label {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Can't Reach the Speakers")
-                    Text("Make sure KEF Bar is allowed in Privacy & Security › Local Network, and that the speakers are on and on the same network.")
+                    Text("Local Network Access Is Off")
+                    Text("macOS is blocking KEF Bar from your network. Turn on KEF Bar in Privacy & Security › Local Network; it reconnects by itself.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -296,7 +268,7 @@ struct LocalNetworkSection: View {
             }
             HStack {
                 Button("Open Privacy Settings") {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!)
+                    NSWorkspace.shared.open(SpeakerModel.localNetworkSettingsURL)
                 }
                 .buttonStyle(.borderedProminent)
                 Spacer()

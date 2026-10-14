@@ -157,6 +157,40 @@ public final class KEFDiscovery: @unchecked Sendable {
         }
     }
 
+    /// Definitive Local Network check against a known address: a direct TCP connection reports
+    /// `.localNetworkDenied` on its own path (Bonjour browsing can succeed while connections are
+    /// still prohibited, so browsing alone isn't proof).
+    public static func probeLocalNetwork(host: String, timeout: Duration = .seconds(2)) async -> LocalNetworkAccess {
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: 80, using: .tcp)
+        defer { connection.cancel() }
+        return await withTaskGroup(of: LocalNetworkAccess.self) { group in
+            group.addTask {
+                await withCheckedContinuation { (cont: CheckedContinuation<LocalNetworkAccess, Never>) in
+                    let once = Once()
+                    connection.stateUpdateHandler = { state in
+                        switch state {
+                        case .ready: once.run { cont.resume(returning: .granted) }
+                        case .waiting, .failed:
+                            let denied = connection.currentPath?.unsatisfiedReason == .localNetworkDenied
+                            once.run { cont.resume(returning: denied ? .denied : .undetermined) }
+                        case .cancelled: once.run { cont.resume(returning: .undetermined) }
+                        default: break
+                        }
+                    }
+                    connection.start(queue: DispatchQueue(label: "KEFProbe"))
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                connection.cancel()
+                return .undetermined
+            }
+            let result = await group.next() ?? .undetermined
+            group.cancelAll()
+            return result
+        }
+    }
+
     static func format(_ host: NWEndpoint.Host) -> String {
         switch host {
         case .ipv4(let a): return "\(a)".components(separatedBy: "%").first ?? "\(a)"
