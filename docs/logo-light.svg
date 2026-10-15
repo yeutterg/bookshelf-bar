@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 14" width="66" height="42">
+  <!-- BookshelfBar's menu bar glyph ("on" state): two filled cabinets with the woofers cut out. -->
+  <defs>
+    <mask id="woofers">
+      <rect width="22" height="14" fill="#fff"/>
+      <circle cx="6" cy="7" r="2.1" fill="#000"/>
+      <circle cx="16" cy="7" r="2.1" fill="#000"/>
+    </mask>
+  </defs>
+  <g fill="#000" mask="url(#woofers)">
+    <rect x="2.5" y="1.5" width="7" height="11" rx="1.75"/>
+    <rect x="12.5" y="1.5" width="7" height="11" rx="1.75"/>
+  </g>
+</svg>

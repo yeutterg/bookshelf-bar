@@ -11,6 +11,12 @@ cask "bookshelfbar" do
 
   app "BookshelfBar.app"
 
+  caveats <<~EOS
+    BookshelfBar isn't notarized by Apple yet. If macOS says it can't be opened,
+    allow it in System Settings → Privacy & Security (Open Anyway), or run:
+      xattr -dr com.apple.quarantine #{appdir}/BookshelfBar.app
+  EOS
+
   zap trash: [
     "~/Library/Preferences/com.github.yeutterg.bookshelfbar.plist",
   ]

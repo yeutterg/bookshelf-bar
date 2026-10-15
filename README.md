@@ -1,28 +1,68 @@
-# BookshelfBar
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
+    <img src="docs/logo-light.svg" alt="" height="30">
+  </picture>
+  BookshelfBar
+</h1>
 
-A native macOS menu bar app for KEF wireless speakers (LSX II LT, LSX II and the rest of the W2 platform), with a fix for the volume surge when a sleeping speaker starts playing over USB.
+**macOS menu bar application for KEF speakers**
+
+A native macOS menu bar app for KEF wireless speakers (LSX II LT, LSX II and the rest of the W2 platform), with a fix for common problems, including:
+
+- **Volume surge on wake:** over USB, a sleeping speaker can come back at full volume when audio starts. BookshelfBar wakes it silent and fades up to your level.
+- **Standby that won't stick:** an app holding an audio stream open (Spotify, even paused, a browser tab, the iOS Simulator) wakes the speakers straight back up. BookshelfBar lets them actually sleep, and they stay in the macOS Sound menu.
+- **Output switching away:** when the speaker drops off USB while waking, macOS can move audio to another device and leave it there. BookshelfBar puts it back.
+
+<p align="center"><img src="docs/screenshot.png" alt="BookshelfBar's menu: power, volume, speakers, inputs, Smooth Start and Keep Awake" width="320"></p>
 
 - **Control:** power, input, volume and mute, plus desk/wall mode, bass extension, treble, balance, auto-standby, wake source and maximum volume.
-- **Smooth Start:** wakes the speakers before audio plays, guards the moment the speaker reconnects over USB, and fades back in. It also puts macOS output back on the KEF if macOS switched away while the speaker was reconnecting.
+- **Smooth Start:** wakes the speakers before audio plays, guards the moment the speaker reconnects over USB, and fades in from silence. The volume can be set while they're asleep; it applies when they fade back on.
 - **Keep Awake With Screen:** optional. The speakers stay on while the Mac's screen is on and go to standby when it turns off, if nothing is playing.
-- **Off stays off:** turning the speakers off works even when an app (a browser tab, the iOS Simulator) holds an audio stream open, which otherwise wakes KEF speakers straight back up.
+- **Volume curve:** shape the slider so everyday listening levels get the most travel.
 - **Live:** reflects changes made with the remote, top panel or KEF Connect.
-- **Setup:** on first launch you choose which pair this Mac controls (**Identify** wakes a pair briefly so you can tell which one it is). The choice is remembered by the speaker's permanent KEF ID, and **Change Speakers…** in About switches pairs.
-- **Native and light:** SwiftUI with system controls and SF Symbols, no polling, and no network connection at all while the speakers are in standby and the popover is closed.
+- **Native and light:** SwiftUI with system controls and SF Symbols, no polling, and no network connection at all while the speakers are in standby and the menu is closed.
 
 Requires macOS 26 or later. Not affiliated with KEF.
 
 ## Install
 
+**Homebrew:**
+
 ```sh
 brew install --cask yeutterg/tap/bookshelfbar
 ```
 
-Or download the DMG from [Releases](https://github.com/yeutterg/bookshelf-bar/releases), open it, and drag BookshelfBar to Applications. Releases are signed with a Developer ID and notarized by Apple.
+**Or download** `BookshelfBar-<version>.dmg` from [Releases](https://github.com/yeutterg/bookshelf-bar/releases), open it, and drag BookshelfBar to Applications.
 
-On first launch macOS asks for Local Network access, which BookshelfBar needs to find and control your speakers.
+### Opening an app that isn't notarized
 
-## Build
+BookshelfBar isn't notarized by Apple yet, so the first time you open it macOS says it can't verify the app. To open it anyway:
+
+1. Open BookshelfBar from Applications. When macOS says it can't be opened, click **Done**.
+2. Open **System Settings → Privacy & Security** and scroll down to **Security**. Next to "BookshelfBar was blocked to protect your Mac", click **Open Anyway**, then confirm with your password or Touch ID.
+3. Click **Open Anyway** once more in the dialog that follows. macOS remembers this, so you only do it once per version.
+
+Or, in Terminal, remove the download quarantine and open it normally:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/BookshelfBar.app
+```
+
+Only do this for apps you trust. The source is all here, and you can [build it yourself](#build-it-yourself) instead.
+
+## Quick start
+
+1. **Connect the speakers.** Plug the primary speaker into your Mac with USB‑C for USB audio. The Mac and the speakers need to be on the same network.
+2. **Open BookshelfBar** and click **Allow** when macOS asks for Local Network access. BookshelfBar uses it to find and control your speakers.
+3. **Pick your speakers.** If there's more than one pair on your network, **Identify** wakes a pair briefly so you can tell which is which. You can switch later under **About → Change Speakers…**
+4. **Play.** Choose your speakers (e.g. "LSX II LT") in the macOS Sound menu. Smooth Start is on by default: they wake silent and fade up to your volume.
+5. **Optional:**
+   - Turn on **Keep Awake With Screen** to have the speakers follow your display.
+   - Open **Sound** for the volume curve, desk/wall mode, bass extension, treble, balance and the speakers' power settings.
+   - If macOS asks whether BookshelfBar may record system audio, that's only so the speaker animation plays while sound is actually coming out. Nothing is recorded. Saying no just keeps the animation still.
+
+## Build it yourself
 
 ```sh
 swift build                 # library, CLI and app
@@ -72,7 +112,7 @@ MIT
 
 ## Releasing
 
-Push a tag like `v0.2.0`. The [release workflow](.github/workflows/release.yml) tests, builds a universal app, signs it, notarizes and staples the DMG, publishes a GitHub release, and updates the cask in [yeutterg/homebrew-tap](https://github.com/yeutterg/homebrew-tap). Repository secrets:
+Push a tag like `v0.2.0`. The [release workflow](.github/workflows/release.yml) tests, builds a universal app, signs and notarizes it when the secrets below are set, publishes a GitHub release, and updates the cask in [yeutterg/homebrew-tap](https://github.com/yeutterg/homebrew-tap). Repository secrets:
 
 | Secret | What |
 |---|---|
