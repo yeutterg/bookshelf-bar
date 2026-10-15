@@ -66,7 +66,7 @@ Only do this for apps you trust. The source is all here, and you can [build it y
 
 ## Suggesting improvements
 
-Found a bug or have an idea? Please [open an issue](https://github.com/yeutterg/bookshelf-bar/issues). Pull requests are welcome too, but for feature requests and bug reports we prefer an issue first, so we can talk it through.
+Found a bug or have an idea? Please [open an issue](https://github.com/yeutterg/bookshelf-bar/issues). Pull requests are welcome too, but for feature requests and bug reports we prefer an issue first, so we can talk it through and throw our agents at it.
 
 ## Build it yourself
 
