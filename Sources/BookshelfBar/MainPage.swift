@@ -18,7 +18,9 @@ struct MainPage: View {
                 if speaker.connection == .connected {
                     VolumeRow(speaker: speaker, smoothStart: smoothStart)
                 }
-                SpeakerArtwork(finish: speaker.finish, state: speaker.visualState(smoothStart))
+                SpeakerArtwork(finish: speaker.finish, state: speaker.visualState(smoothStart),
+                               audible: smoothStart.audible,
+                               onScreenChanged: { smoothStart.meterWanted = $0 })
                     .frame(height: 140)
                     .frame(maxWidth: .infinity)
             } header: {
@@ -130,13 +132,21 @@ struct VolumeRow: View {
 
     /// On USB‑C the slider is the Mac's output volume, the same value the macOS Sound control
     /// and volume keys change. On the speaker's other inputs it's the speaker's own volume.
-    private var usesMacVolume: Bool { speaker.source == .usb && smoothStart.macVolume != nil }
+    /// In standby it's the saved USB volume: BookshelfBar's power switch wakes into USB‑C and
+    /// Smooth Start fades up to it, so it can be set before waking. While waking it follows
+    /// the fade.
+    private var usbVolume: Float? {
+        if smoothStart.phase != .idle { return smoothStart.macVolume }
+        if !speaker.isOn { return smoothStart.savedVolume }
+        return speaker.source == .usb ? smoothStart.macVolume : nil
+    }
+    private var usesMacVolume: Bool { usbVolume != nil }
     private var muted: Bool { usesMacVolume ? smoothStart.macMuted : speaker.muted }
     private var g: Double { min(max(gamma, VolumeCurve.range.lowerBound), VolumeCurve.range.upperBound) }
 
     /// Native value (0…1): macOS scalar on USB‑C, speaker volume / 100 otherwise.
     private var native: Double {
-        usesMacVolume ? Double(smoothStart.macVolume ?? 0) : Double(speaker.volume) / 100
+        usbVolume.map(Double.init) ?? Double(speaker.volume) / 100
     }
     private var value: Double { VolumeCurve.slider(fromNative: native, gamma: g) * 100 }
 
@@ -148,6 +158,7 @@ struct VolumeRow: View {
             }
             .buttonStyle(.borderless)
             .help(muted ? "Unmute" : "Mute")
+            .disabled(!speaker.isOn)
             Slider(value: Binding(get: { value }, set: { set($0) }), in: 0...100) { Text("Volume") }
                 .labelsHidden()
             Text("\(Int(value.rounded()))")
@@ -155,7 +166,7 @@ struct VolumeRow: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 26, alignment: .trailing)
         }
-        .disabled(!speaker.isOn)
+        .disabled(!speaker.isOn && !usesMacVolume)
     }
 
     private func set(_ v: Double) {

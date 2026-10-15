@@ -79,17 +79,16 @@ import Testing
         #expect(audio.currentMuted == true)
     }
 
-    /// Starts silent, unmutes only at the inaudible floor, then rises in bounded whole-dB steps.
+    /// Starts from silence, unmutes only there, then rises in bounded whole-dB steps.
     @Test func fadesInFromSilenceInWholeDecibels() async {
         let audio = MockVolumeDevice(volume: 0.9, muted: false, decibelRange: -120...0)
         let guarder = VolumeGuard(audio: audio)
-        var plan = VolumeGuard.Plan(hold: 0.4)
+        var plan = VolumeGuard.Plan(hold: 0.02)
         plan.settleFor = 0.02
         plan.settleTimeout = 0.5
         plan.holdFor = 0.02
         plan.rampFor = 0.3
         plan.rampInterval = 0.005
-        plan.fadeFromBelow = 50
 
         let completed = await run(guarder, audio: audio, plan: plan,
                                   intent: VolumeIntent(target: 0.75, muted: false))
@@ -98,31 +97,49 @@ import Testing
         #expect(audio.currentMuted == false)
         #expect(abs((audio.currentVolume ?? 0) - 0.75) < 0.001)
         let fade = audio.decibelWrites
-        #expect(fade.first == -80)          // target −30 dB, 50 below
-        #expect(audio.decibelsWhenUnmuted == -80)
+        #expect(fade.first == -120)
+        #expect(audio.decibelsWhenUnmuted == -120)
         #expect(zip(fade, fade.dropFirst()).allSatisfy { $1 - $0 >= 1 && $1 - $0 <= 8 && $1 == $1.rounded() })
-        #expect(fade.last == -30)
+        #expect(fade.last == -16)           // −120 + 120·√0.75, rounded
     }
 
-    /// The real KEF reports a write late. Measuring the target too early read the parked level
-    /// (−103 dB), so the fade stayed inaudible and then jumped to full volume.
-    @Test func waitsForTheTargetBeforeMeasuringItsLevel() async {
+    /// The old fade wrote the full target while "muted" to learn its dB; a late mute on the
+    /// real KEF made that an audible burst before the fade. Nothing may go above the parked
+    /// level until the output is unmuted at silence.
+    @Test func neverRaisesTheLevelWhileMuted() async {
         let audio = MockVolumeDevice(volume: 0.9, muted: false, decibelRange: -120...0, staleReads: 3)
         let guarder = VolumeGuard(audio: audio)
-        var plan = VolumeGuard.Plan(hold: 0.1)
+        var plan = VolumeGuard.Plan(hold: 0.02)
         plan.settleFor = 0.02
         plan.settleTimeout = 1
-        plan.holdFor = 0
         plan.rampFor = 0.2
         plan.rampInterval = 0.005
-        plan.fadeFromBelow = 50
 
         let completed = await run(guarder, audio: audio, plan: plan,
                                   intent: VolumeIntent(target: 0.75, muted: false))
 
         #expect(completed)
-        #expect(audio.decibelWrites.first == -80)
-        #expect(audio.decibelWrites.last == -30)
+        #expect(audio.maxLevelWrittenWhileMuted.map { $0 <= 0.02 + plan.holdTolerance } ?? true)
+        #expect(audio.decibelWrites.last == -16)
+    }
+
+    /// A device with an unknown taper falls back to a scalar ramp, still only upward from hold.
+    @Test func rampsInScalarWhenTheCurveIsUnknown() async {
+        let audio = MockVolumeDevice(volume: 0.9, muted: false, decibelRange: -120...0, linearDecibels: true)
+        let guarder = VolumeGuard(audio: audio)
+        var plan = VolumeGuard.Plan(hold: 0.02)
+        plan.settleFor = 0.02
+        plan.settleTimeout = 0.5
+        plan.rampFor = 0.1
+        plan.rampInterval = 0.005
+
+        let completed = await run(guarder, audio: audio, plan: plan,
+                                  intent: VolumeIntent(target: 0.75, muted: false))
+
+        #expect(completed)
+        #expect(audio.decibelWrites.isEmpty)
+        #expect(audio.maxLevelWrittenWhileMuted.map { $0 <= 0.02 + plan.holdTolerance } ?? true)
+        #expect(abs((audio.currentVolume ?? 0) - 0.75) < 0.001)
     }
 
     private func run(_ guarder: VolumeGuard, audio: MockVolumeDevice, plan: VolumeGuard.Plan,
@@ -143,6 +160,8 @@ private final class MockVolumeDevice: VolumeDeviceIO, @unchecked Sendable {
     private let step: Float?
     private let range: ClosedRange<Float>?
     private let staleReads: Int
+    private let linear: Bool
+    private var storedMaxWhileMuted: Float?
     private var staleVolume: Float?
     private var staleLeft = 0
     private var storedMuteWrites: [Bool] = []
@@ -150,31 +169,48 @@ private final class MockVolumeDevice: VolumeDeviceIO, @unchecked Sendable {
     private var storedDecibelsWhenUnmuted: Float?
 
     init(volume: Float?, muted: Bool?, acceptsWrites: Bool = true, step: Float? = nil,
-         decibelRange: ClosedRange<Float>? = nil, staleReads: Int = 0) {
+         decibelRange: ClosedRange<Float>? = nil, staleReads: Int = 0, linearDecibels: Bool = false) {
         storedVolume = volume
         storedMuted = muted
         self.acceptsWrites = acceptsWrites
         self.step = step
         range = decibelRange
         self.staleReads = staleReads
+        linear = linearDecibels
+    }
+
+    var maxLevelWrittenWhileMuted: Float? { lock.withLock { storedMaxWhileMuted } }
+
+    /// Call with the lock held.
+    private func noteWrite(_ level: Float) {
+        if storedMuted == true { storedMaxWhileMuted = max(storedMaxWhileMuted ?? 0, level) }
+    }
+
+    /// macOS's USB Audio taper (dB = min + span·√scalar), or a linear one for the fallback test.
+    private func db(_ v: Float, _ r: ClosedRange<Float>) -> Float {
+        r.lowerBound + (r.upperBound - r.lowerBound) * (linear ? v : v.squareRoot())
+    }
+    private func scalar(_ db: Float, _ r: ClosedRange<Float>) -> Float {
+        let x = (db - r.lowerBound) / (r.upperBound - r.lowerBound)
+        return linear ? x : x * x
     }
 
     var decibelWrites: [Float] { lock.withLock { storedDecibelWrites } }
     var decibelsWhenUnmuted: Float? { lock.withLock { storedDecibelsWhenUnmuted } }
 
-    // A linear dB scale is enough to check the fade's shape.
     func decibelRange(_ id: AudioObjectID) -> ClosedRange<Float>? { range }
     func decibels(_ id: AudioObjectID) -> Float? {
         lock.withLock {
             let v = staleLeft > 0 ? staleVolume : storedVolume
-            return range.flatMap { r in v.map { r.lowerBound + (r.upperBound - r.lowerBound) * $0 } }
+            return range.flatMap { r in v.map { db($0, r) } }
         }
     }
     func setDecibels(_ id: AudioObjectID, _ db: Float) -> Bool {
         lock.withLock {
             guard let range else { return false }
             storedDecibelWrites.append(db)
-            storedVolume = (db - range.lowerBound) / (range.upperBound - range.lowerBound)
+            storedVolume = scalar(db, range)
+            noteWrite(storedVolume ?? 0)
             return true
         }
     }
@@ -197,6 +233,7 @@ private final class MockVolumeDevice: VolumeDeviceIO, @unchecked Sendable {
             if acceptsWrites {
                 if staleReads > 0 { staleVolume = storedVolume; staleLeft = staleReads }
                 storedVolume = step.map { (scalar / $0).rounded() * $0 } ?? scalar
+                noteWrite(storedVolume ?? 0)
             }
             return acceptsWrites
         }
@@ -207,7 +244,7 @@ private final class MockVolumeDevice: VolumeDeviceIO, @unchecked Sendable {
             storedMuteWrites.append(muted)
             if acceptsWrites {
                 if storedMuted == true, !muted, storedDecibelsWhenUnmuted == nil, let range, let v = storedVolume {
-                    storedDecibelsWhenUnmuted = range.lowerBound + (range.upperBound - range.lowerBound) * v
+                    storedDecibelsWhenUnmuted = db(v, range)
                 }
                 storedMuted = muted
             }

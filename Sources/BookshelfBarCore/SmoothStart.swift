@@ -42,7 +42,14 @@ public final class SmoothStart {
     /// matching pair during setup. USB exposes no serial number, so model is all we can match on.
     public var usbDeviceName: String? { usbPresent ? usb.name : nil }
     /// True while some app is playing to the KEF USB device.
-    public private(set) var usbRunning = false
+    public private(set) var usbRunning = false { didSet { updateMeter() } }
+    /// True while sound is actually reaching the KEF (not just an open stream: Spotify keeps
+    /// one streaming silence while paused). Only measured while `meterWanted`.
+    public private(set) var audible = false
+    /// Set while the menu is on screen; the level tap runs only then, and only during a stream.
+    public var meterWanted = false { didSet { updateMeter() } }
+    private let meter = OutputLevelMeter()
+    private var meterRunning = false
 
     private let speaker: SpeakerModel
     private let usb = KEFUSBMonitor()
@@ -60,14 +67,16 @@ public final class SmoothStart {
     private var guardGeneration = 0
     private var observers: [NSObjectProtocol] = []
 
-    /// Last USB volume the user chose (0…1), restored after every re-arrival.
-    private var rememberedVolume: Float? {
-        get { defaults.object(forKey: "kefUSBVolume") as? Float }
-        set { defaults.set(newValue, forKey: "kefUSBVolume") }
-    }
+    /// Last USB volume the user chose (0…1), restored after every re-arrival. Stored (not read
+    /// through) so the slider updates when it's changed in standby.
+    private var rememberedVolume: Float? { didSet { defaults.set(rememberedVolume, forKey: "kefUSBVolume") } }
+
+    /// The level the fade-in has reached, for the slider to follow while waking.
+    private var fadeLevel: Float?
 
     public init(speaker: SpeakerModel) {
         self.speaker = speaker
+        rememberedVolume = UserDefaults.standard.object(forKey: "kefUSBVolume") as? Float
         enabled = defaults.object(forKey: "smoothStart") as? Bool ?? true
         wakeOnUnlock = defaults.object(forKey: "wakeOnUnlock") as? Bool ?? true
     }
@@ -83,12 +92,17 @@ public final class SmoothStart {
 
     // MARK: Mac-side volume (what the macOS Sound control shows)
 
-    /// The KEF USB output volume (0…1). While Smooth Start is holding or ramping this reports
-    /// the user's target, not the transient level.
+    /// The KEF USB output volume (0…1). While Smooth Start is waking the speaker this is the
+    /// level actually playing: silent, then rising with the fade.
     public var macVolume: Float? {
+        if phase != .idle { return fadeLevel ?? 0 }
         guard usbPresent else { return nil }
-        return phase == .idle ? (liveVolume ?? rememberedVolume) : rememberedVolume
+        return liveVolume ?? rememberedVolume
     }
+
+    /// The user's USB volume, kept while the speaker sleeps. Changing it in standby (through
+    /// `setMacVolume`) sets where the next fade-in ends.
+    public var savedVolume: Float? { rememberedVolume }
     public var macMuted: Bool { phase == .idle ? liveMuted : (intent?.snapshot.muted ?? liveMuted) }
     private var liveVolume: Float?
     private var liveMuted = false
@@ -127,8 +141,10 @@ public final class SmoothStart {
     private let holdLevel: Float = 0.02
     private let volumeGuard = VolumeGuard()
     /// The device has been parked (low and muted) on purpose; don't mistake that for the
-    /// user's choice, and fade back up when the speaker returns.
-    private var armedLow = false
+    /// user's choice, and fade back up when the speaker returns. Persisted: after a relaunch
+    /// the parked mute was read as the user's, and every later wake skipped the fade and
+    /// stayed muted.
+    private var armedLow = false { didSet { defaults.set(armedLow, forKey: "kefParked") } }
 
     private func handle(_ event: KEFUSBMonitor.Event) {
         // During a firmware update the USB interface itself may be reflashed: no volume writes,
@@ -146,8 +162,17 @@ public final class SmoothStart {
             usbRunning = running
             speaker.usbStreamActive = running
             kefWasDefault = isDefault
-            liveVolume = volume
-            liveMuted = muted
+            if defaults.bool(forKey: "kefParked"), let device {
+                // Relaunched while parked: the low level and the mute are ours. Fade in if the
+                // speaker turns out to be on.
+                armedLow = true
+                liveVolume = rememberedVolume
+                liveMuted = false
+                watchForLateWake(device)
+            } else {
+                liveVolume = volume
+                liveMuted = muted
+            }
             if rememberedVolume == nil { rememberedVolume = volume }
 
         case .removed:
@@ -238,6 +263,7 @@ public final class SmoothStart {
             volumeGuard.setLevel(id, holdLevel)
         }
         if on {
+            fadeLevel = nil
             phase = .waking
             startWakeWatchdog()
             Task { await speaker.wakeIfNeeded(notify: false) }
@@ -315,7 +341,13 @@ public final class SmoothStart {
         self.intent = intent
         let plan = VolumeGuard.Plan(hold: holdLevel)
         slog.info("guard id=\(id) hold=\(plan.hold) target=\(self.target)")
-        volumeGuard.run(id, plan, intent: intent, log: { slog.info("\($0, privacy: .public)") }) { [weak self] completed in
+        fadeLevel = nil
+        volumeGuard.run(id, plan, intent: intent, log: { slog.info("\($0, privacy: .public)") }, progress: { [weak self] level in
+            Task { @MainActor in
+                guard let self, self.guardGeneration == generation else { return }
+                self.fadeLevel = level
+            }
+        }) { [weak self] completed in
             Task { @MainActor in
                 guard let self, self.guardGeneration == generation else { return }
                 self.liveVolume = intent.snapshot.target
@@ -329,6 +361,7 @@ public final class SmoothStart {
     private func finish() {
         armedLow = false
         intent = nil
+        fadeLevel = nil
         ignoreVolumeUntil = .now + 0.5
         phase = .idle
         usbRunning = usb.isRunning
@@ -352,6 +385,27 @@ public final class SmoothStart {
         if armedLow || phase != .idle, let id = usb.device, let v = rememberedVolume {
             volumeGuard.setState(id, target: v, muted: liveMuted)
         }
+    }
+
+    // MARK: Level meter
+
+    private func updateMeter() {
+        let want = meterWanted && usbRunning
+        guard want != meterRunning else { return }
+        meterRunning = want
+        guard want, let id = usb.device, let uid = AudioHardware.uid(id),
+              let clock = AudioHardware.otherOutputs(excluding: id, preferredUID: nil).first.flatMap(AudioHardware.uid) else {
+            meter.stop()
+            audible = false
+            return
+        }
+        let started = meter.start(deviceUID: uid, clockUID: clock) { [weak self] audible in
+            Task { @MainActor in
+                guard let self, self.meterRunning else { return }
+                self.audible = audible
+            }
+        }
+        if !started { slog.info("level tap unavailable") }
     }
 
     // MARK: System triggers

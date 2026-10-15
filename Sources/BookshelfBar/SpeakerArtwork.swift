@@ -6,6 +6,10 @@ import SwiftUI
 struct SpeakerArtwork: View {
     let finish: KEFFinish
     let state: SpeakerState
+    /// Sound is actually coming out. A stream alone (Spotify paused) doesn't pulse.
+    var audible = true
+    /// Reports whether the artwork is on screen, so the level meter only runs then.
+    var onScreenChanged: (Bool) -> Void = { _ in }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     // SwiftUI drives repeating animations from the CPU every frame, and the menu bar panel can
     // stay alive while hidden. Only pulse while it's on screen. (Not `appearsActive`: a menu
@@ -28,14 +32,16 @@ struct SpeakerArtwork: View {
                     .brightness(dimmed ? -0.12 : 0)
                     .shadow(color: .black.opacity(0.24), radius: 8, y: 7)
 
-                if state == .playing || state == .waking {
-                    // `id` restarts the pulse cleanly when motion is switched back on.
+                if (state == .playing && audible) || state == .waking {
+                    // `id` restarts the pulse cleanly when motion is switched back on, and when
+                    // the state changes: a repeating animation keeps the colour it started with,
+                    // so a pulse begun while waking stayed orange once playing.
                     SpeakerPulse(state: state, reduceMotion: still)
                         .position(x: width * 0.257, y: height * 0.515)
-                        .id(still)
+                        .id(PulseID(still: still, state: state))
                     SpeakerPulse(state: state, reduceMotion: still)
                         .position(x: width * 0.743, y: height * 0.515)
-                        .id(still)
+                        .id(PulseID(still: still, state: state))
                 }
 
                 ZStack {
@@ -52,6 +58,8 @@ struct SpeakerArtwork: View {
             .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
         }
         .background(WindowVisibility(visible: $onScreen))
+        .onChange(of: onScreen, initial: true) { onScreenChanged(onScreen) }
+        .onDisappear { onScreenChanged(false) }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: dimmed)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: state)
         .accessibilityHidden(true)
@@ -77,6 +85,11 @@ struct SpeakerArtwork: View {
         }
         return result
     }()
+}
+
+private struct PulseID: Hashable {
+    let still: Bool
+    let state: SpeakerState
 }
 
 /// Two Core Animation-backed vector rings per driver. They run only while playing or waking;

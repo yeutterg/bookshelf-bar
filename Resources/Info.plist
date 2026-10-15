@@ -22,6 +22,8 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>BookshelfBar finds and controls your KEF speakers on your local network.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>BookshelfBar checks whether sound is reaching your speakers, so the speaker animation only plays while they're playing. Nothing is recorded.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_kef-info._tcp</string>
