@@ -54,17 +54,16 @@ public final class VolumeGuard: @unchecked Sendable {
         /// The KEF's USB volume moves in whole-dB steps, so an exact scalar can't always be
         /// hit; anything within this distance of the hold level counts (≈1–2 dB).
         public var holdTolerance: Float = 0.04
-        /// Stay muted after the speaker reconnects. Its output still pops and stutters for a
-        /// few seconds after waking; any audible level during that is heard as jitter.
-        public var holdFor: Double = 4
-        /// Then fade in from this far below the user's volume (inaudible) …
-        public var fadeFromBelow: Float = 50
+        /// Extra time to stay muted once the hold has settled, before fading in.
+        public var holdFor: Double = 0
+        /// Fade in from this far below the user's volume (just above silence) …
+        public var fadeFromBelow: Float = 35
         /// … over this long, in even whole-dB steps.
-        public var rampFor: Double = 7
+        public var rampFor: Double = 3
         /// Time between ramp writes. The KEF applies USB volume in whole-dB steps (≈0.006
         /// scalar) and falls behind if written every few ms, then catches up in bursts (heard as
-        /// jitter at the low end). Writing at most one step per tick keeps them evenly spaced.
-        public var rampInterval: Double = 0.1
+        /// jitter at the low end). One whole-dB step per write keeps them evenly spaced.
+        public var rampInterval: Double = 0.07
         /// Skip ramp writes smaller than this; they'd round to the step already playing.
         public var rampMinStep: Float = 0.003
         public init(hold: Float) {
@@ -243,9 +242,11 @@ public final class VolumeGuard: @unchecked Sendable {
             let t = Float(min(Date().timeIntervalSince(start) / plan.rampFor, 1))
             // Even in dB with soft ends: each step is the same loudness change.
             let eased = 0.5 * t + 0.5 * t * t * (3 - 2 * t)
-            let db = (floorDB + (targetDB - floorDB) * eased).rounded()
+            // Never more than one step per write: if this thread stalls, the fade runs a
+            // little long instead of jumping.
+            let db = min((floorDB + (targetDB - floorDB) * eased).rounded(), written + 1)
             if db != written, audio.setDecibels(id, db) { written = db }
-            if t >= 1 { break }
+            if t >= 1, written >= targetDB || Date().timeIntervalSince(start) > plan.rampFor * 2 + 1 { break }
             Thread.sleep(forTimeInterval: plan.rampInterval)
         }
         return true

@@ -89,6 +89,7 @@ import Testing
         plan.holdFor = 0.02
         plan.rampFor = 0.3
         plan.rampInterval = 0.005
+        plan.fadeFromBelow = 50
 
         let completed = await run(guarder, audio: audio, plan: plan,
                                   intent: VolumeIntent(target: 0.75, muted: false))
@@ -99,7 +100,7 @@ import Testing
         let fade = audio.decibelWrites
         #expect(fade.first == -80)          // target −30 dB, 50 below
         #expect(audio.decibelsWhenUnmuted == -80)
-        #expect(zip(fade, fade.dropFirst()).allSatisfy { $1 - $0 >= 0 && $1 - $0 <= 2 })
+        #expect(zip(fade, fade.dropFirst()).allSatisfy { $1 - $0 == 1 })
         #expect(fade.last == -30)
     }
 
