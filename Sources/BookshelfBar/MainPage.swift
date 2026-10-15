@@ -21,7 +21,6 @@ struct MainPage: View {
                 SpeakerArtwork(finish: speaker.finish, state: speaker.visualState(smoothStart))
                     .frame(height: 140)
                     .frame(maxWidth: .infinity)
-                if let apps = speaker.rewokenBy { RewokenNotice(speaker: speaker, apps: apps) }
             } header: {
                 if let name = speaker.info?.name, !name.isEmpty { Text(name) }
             }
@@ -288,33 +287,6 @@ struct ManualConnectRows: View {
     }
 }
 
-
-/// Shown when the speakers woke straight back up after being turned off, because an app holds
-/// an audio stream open to them.
-struct RewokenNotice: View {
-    let speaker: SpeakerModel
-    let apps: [String]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Kept awake by \(apps.formatted(.list(type: .and)))")
-                    Text("It's holding audio open to the speakers. Turning off anyway removes them from the Sound menu until you turn them back on.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            } icon: {
-                Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
-            }
-            HStack {
-                Spacer()
-                Button("Turn Off Anyway") { speaker.turnOff(force: true) }
-            }
-        }
-    }
-}
 
 
 /// Quit as the last row of the main page's Settings group.

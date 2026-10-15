@@ -46,6 +46,12 @@ public final class VolumeGuard: @unchecked Sendable {
         public var holdFor: Double = 5
         /// Long, gentle S-curve back up to the user's volume.
         public var rampFor: Double = 4.5
+        /// Time between ramp writes. The KEF applies USB volume in whole-dB steps (≈0.006
+        /// scalar) and falls behind if written every few ms, then catches up in bursts (heard as
+        /// jitter at the low end). One write per ~1 dB step keeps the steps evenly spaced.
+        public var rampInterval: Double = 0.12
+        /// Skip ramp writes smaller than this; they'd round to the step already playing.
+        public var rampMinStep: Float = 0.003
         public init(hold: Float) {
             self.hold = hold
         }
@@ -175,14 +181,18 @@ public final class VolumeGuard: @unchecked Sendable {
             // 3. Ramp, timed against the clock so it takes `rampFor` regardless of write latency.
             log("ramp from \(plan.hold)")
             let rampStart = Date()
+            var written = plan.hold
             while alive() {
                 let t = Float(min(Date().timeIntervalSince(rampStart) / plan.rampFor, 1))
-                let eased = t * t * (3 - 2 * t)
+                // Half S-curve, half linear: soft ends without a near-flat start, where a full
+                // smoothstep leaves only a few sparse, uneven steps.
+                let eased = 0.5 * t + 0.5 * t * t * (3 - 2 * t)
                 let desired = intent.snapshot
-                _ = audio.setVolume(id, plan.hold + (desired.target - plan.hold) * eased)
+                let level = plan.hold + (desired.target - plan.hold) * eased
+                if abs(level - written) >= plan.rampMinStep, audio.setVolume(id, level) { written = level }
                 if audio.isMuted(id) != desired.muted { _ = audio.setMuted(id, desired.muted) }
                 if t >= 1 { break }
-                Thread.sleep(forTimeInterval: 0.03)
+                Thread.sleep(forTimeInterval: plan.rampInterval)
             }
             guard alive() else { return done(false) }
             let final = intent.snapshot

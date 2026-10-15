@@ -445,7 +445,6 @@ public final class SpeakerModel {
 
     public func togglePower() {
         guard !isUpdatingFirmware else { return }
-        rewokenBy = nil
         if isOn { turnOff() } else {
             willChangePower?(true)
             setSource(.usb)
@@ -462,31 +461,32 @@ public final class SpeakerModel {
     /// Set by Smooth Start: names of the apps currently holding an audio stream open to the KEF.
     public var streamHolders: () -> [String] = { [] }
 
-    /// The speaker woke straight back up after being turned off, because these apps hold an
-    /// audio stream open to it. The UI offers "Turn Off Anyway".
-    public private(set) var rewokenBy: [String]?
-
     /// Normal standby keeps the speaker in the macOS Sound menu, and playing audio wakes it.
-    /// But with Wake On = USB Audio, the firmware wakes straight back up if an app holds an audio
-    /// stream open to it at that moment (the iOS Simulator, a paused browser tab…).
+    /// But with Wake On = USB Audio, the firmware wakes straight back up ~3 s later if an app
+    /// holds an audio stream open to it (Spotify even while paused, the iOS Simulator…).
     ///
-    /// `force: true` makes standby stick anyway: switch the wake source off, enter standby, and
-    /// restore it a few seconds later (restoring doesn't wake it). Measured side effect: the
-    /// speaker also powers down its USB interface until its next wake, so it leaves the Sound
-    /// menu and Mac audio can't wake it. Hence only on request, or from Keep Awake at screen-off.
+    /// So when a stream is held, standby is made to stick: switch the wake source off, enter
+    /// standby, and restore it a few seconds later (restoring doesn't wake it). Measured side
+    /// effect: the speaker also powers down its USB interface until its next wake, so it leaves
+    /// the Sound menu and Mac audio can't wake it, only BookshelfBar or the remote. If no stream
+    /// was seen but the speaker re-wakes anyway, the same is retried once.
+    ///
+    /// `force: true` (Keep Awake at screen-off) skips the re-wake check.
     public func turnOff(force: Bool = false) {
+        turnOff(holdWakeOff: usbStreamActive, checkRewake: !force)
+    }
+
+    private func turnOff(holdWakeOff: Bool, checkRewake: Bool) {
         guard !isUpdatingFirmware else { return }
-        rewokenBy = nil
         willChangePower?(false)
         status = .standby
         source = .standby
         guard let client else { return }
         let generation = connectionGeneration
-        let streamHeld = force && usbStreamActive
         let identity = restorationIdentity ?? client.host
         let restoreKey = Self.pendingWakeRestoreKey(identity)
         Task {
-            let wake = streamHeld ? ((try? await client.get(.wakeUpSource).string).flatMap(WakeUpSource.init) ?? .none) : .none
+            let wake = holdWakeOff ? ((try? await client.get(.wakeUpSource).string).flatMap(WakeUpSource.init) ?? .none) : .none
             if wake != .none {
                 defaults.set(wake.rawValue, forKey: restoreKey)
                 do { try await client.set(.wakeUpSource, WakeUpSource.none.value) }
@@ -497,17 +497,15 @@ public final class SpeakerModel {
             }
             do { try await client.setSource(.standby) }
             catch { if generation == connectionGeneration { lastError = error.localizedDescription } }
-            if !force, generation == connectionGeneration, self.client === client, usbStreamActive {
-                // The firmware re-wakes ~3 s later if a held stream is the cause; check once.
-                try? await Task.sleep(for: .seconds(6))
-                if generation == connectionGeneration, self.client === client,
+            if checkRewake, wake == .none, generation == connectionGeneration, self.client === client {
+                // A held stream the monitor missed: the firmware re-wakes ~3 s later. Check once.
+                try? await Task.sleep(for: .seconds(5))
+                if generation == connectionGeneration, self.client === client, source == .standby,
                    (try? await client.status()) == .powerOn {
-                    status = .powerOn
-                    source = (try? await client.source()) ?? source
                     let names = streamHolders()
-                    let holders = names.isEmpty ? ["another app"] : names
-                    rewokenBy = holders
-                    log.info("re-woken after standby by \(holders.joined(separator: ", "), privacy: .public)")
+                    log.info("re-woken after standby by \((names.isEmpty ? ["another app"] : names).joined(separator: ", "), privacy: .public); holding wake off")
+                    turnOff(holdWakeOff: true, checkRewake: false)
+                    return
                 }
             }
             if wake != .none {
