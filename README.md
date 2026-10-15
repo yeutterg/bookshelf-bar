@@ -9,10 +9,14 @@
 A native macOS menu bar app for KEF wireless speakers (LSX II LT, LSX II and the rest of the W2 platform), with a fix for common problems, including:
 
 - **Volume surge on wake:** over USB, a sleeping speaker can come back at full volume when audio starts. BookshelfBar wakes it silent and fades up to your level.
-- **Standby that won't stick:** an app holding an audio stream open (Spotify, even paused, a browser tab, the iOS Simulator) wakes the speakers straight back up. BookshelfBar lets them actually sleep, and they stay in the macOS Sound menu.
+- **Speakers that wake right back up:** with Wake On set to USB audio, turning the speakers off while any app holds an audio stream open to them (Spotify, even paused, a browser tab, the iOS Simulator) wakes them again a few seconds later. BookshelfBar moves the Mac's output aside so they stay asleep, and they stay selectable in the macOS Sound menu.
 - **Output switching away:** when the speaker drops off USB while waking, macOS can move audio to another device and leave it there. BookshelfBar puts it back.
 
 <img src="docs/screenshot.png" alt="BookshelfBar open from the macOS menu bar: power, volume, the speakers, inputs, Smooth Start and Keep Awake">
+
+Requires macOS 26 or later. Not affiliated with KEF.
+
+## Features
 
 - **Control:** power, input, volume and mute, plus desk/wall mode, bass extension, treble, balance, auto-standby, wake source and maximum volume.
 - **Smooth Start:** wakes the speakers before audio plays, guards the moment the speaker reconnects over USB, and fades in from silence. The volume can be set while they're asleep; it applies when they fade back on.
@@ -20,8 +24,6 @@ A native macOS menu bar app for KEF wireless speakers (LSX II LT, LSX II and the
 - **Volume curve:** shape the slider so everyday listening levels get the most travel.
 - **Live:** reflects changes made with the remote, top panel or KEF Connect.
 - **Native and light:** SwiftUI with system controls and SF Symbols, no polling, and no network connection at all while the speakers are in standby and the menu is closed.
-
-Requires macOS 26 or later. Not affiliated with KEF.
 
 ## Install
 
