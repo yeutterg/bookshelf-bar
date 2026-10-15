@@ -120,12 +120,14 @@ public final class SmoothStart {
 
     // MARK: Events
 
-    /// How far below the target to hold while the speaker wakes, in scalar units (about 20 dB
-    /// on the KEF's curve).
-    private let holdDrop: Float = 0.22
+    /// Where the KEF is parked (muted) while it changes power and reconnects: effectively
+    /// silent (around −110 dB on its USB scale). macOS restores this level when the device
+    /// comes back, and mute writes to a freshly reconnected device can take ~2 s to land, so
+    /// anything audible here was heard as a pop before the fade-in.
+    private let holdLevel: Float = 0.02
     private let volumeGuard = VolumeGuard()
-    /// The device has been set to the hold level on purpose (pre-armed); don't mistake that for
-    /// the user's choice, and ramp back up when the speaker returns.
+    /// The device has been parked (low and muted) on purpose; don't mistake that for the
+    /// user's choice, and fade back up when the speaker returns.
     private var armedLow = false
 
     private func handle(_ event: KEFUSBMonitor.Event) {
@@ -203,29 +205,29 @@ public final class SmoothStart {
             // During the guard this notification is usually an echo of our own protective mute.
             // Treating it as user intent would leave an originally-unmuted speaker muted. App
             // button changes update `intent` directly; resume observing hardware when idle.
-            if phase == .idle { liveMuted = muted }
+            if phase == .idle, !armedLow { liveMuted = muted }
         }
     }
 
     private var target: Float { rememberedVolume ?? 0.5 }
-    private var holdLevel: Float { max(target - holdDrop, 0) }
 
     /// Called just before the speaker's power changes (BookshelfBar's switch, a pre-wake, audio
-    /// starting on a sleeping speaker). Sets the KEF to the hold level *before* it drops off
-    /// USB: macOS restores the last level it saw when the device comes back, so it returns low
-    /// instead of at full volume.
+    /// starting on a sleeping speaker). Parks the KEF silent and muted *before* it drops off
+    /// USB: macOS restores the last level it saw when the device comes back, so it returns
+    /// silent instead of at full volume. Any guard still running belongs to an older power
+    /// change; stop it so it can't write over the parked level.
     func prepareForPower(on: Bool) {
         guard !speaker.isUpdatingFirmware else { return }
         guard enabled else { return }
-        if !on {
-            guardGeneration += 1
-            guardTask?.cancel()
-            volumeGuard.cancel()
-            phase = .idle
-        }
+        guardGeneration += 1
+        guardTask?.cancel()
+        volumeGuard.cancel()
+        intent = nil
+        phase = .idle
         if let id = usb.device {
-            slog.info("pre-arm hold \(self.holdLevel) (turning \(on ? "on" : "off", privacy: .public))")
+            slog.info("pre-arm park (turning \(on ? "on" : "off", privacy: .public))")
             armedLow = true
+            volumeGuard.setMuted(id, true)
             volumeGuard.setLevel(id, holdLevel)
         }
         if on {

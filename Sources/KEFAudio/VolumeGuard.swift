@@ -6,6 +6,16 @@ public protocol VolumeDeviceIO: Sendable {
     func isMuted(_ id: AudioObjectID) -> Bool?
     @discardableResult func setVolume(_ id: AudioObjectID, _ scalar: Float) -> Bool
     @discardableResult func setMuted(_ id: AudioObjectID, _ muted: Bool) -> Bool
+    /// Volume in dB, for devices that expose it. Without these the guard ramps in scalar.
+    func decibels(_ id: AudioObjectID) -> Float?
+    func decibelRange(_ id: AudioObjectID) -> ClosedRange<Float>?
+    @discardableResult func setDecibels(_ id: AudioObjectID, _ db: Float) -> Bool
+}
+
+public extension VolumeDeviceIO {
+    func decibels(_ id: AudioObjectID) -> Float? { nil }
+    func decibelRange(_ id: AudioObjectID) -> ClosedRange<Float>? { nil }
+    func setDecibels(_ id: AudioObjectID, _ db: Float) -> Bool { false }
 }
 
 private struct SystemVolumeDevice: VolumeDeviceIO {
@@ -13,6 +23,9 @@ private struct SystemVolumeDevice: VolumeDeviceIO {
     func isMuted(_ id: AudioObjectID) -> Bool? { AudioHardware.isMuted(id) }
     func setVolume(_ id: AudioObjectID, _ scalar: Float) -> Bool { AudioHardware.setVolume(id, scalar) }
     func setMuted(_ id: AudioObjectID, _ muted: Bool) -> Bool { AudioHardware.setMuted(id, muted) }
+    func decibels(_ id: AudioObjectID) -> Float? { AudioHardware.volumeDecibels(id) }
+    func decibelRange(_ id: AudioObjectID) -> ClosedRange<Float>? { AudioHardware.volumeDecibelRange(id) }
+    func setDecibels(_ id: AudioObjectID, _ db: Float) -> Bool { AudioHardware.setVolumeDecibels(id, db) }
 }
 
 /// Thread-safe user intent shared with the background guard. Slider and mute changes update this
@@ -38,18 +51,20 @@ public final class VolumeGuard: @unchecked Sendable {
         public var settleFor: Double = 0.5
         /// Fail closed if mute + hold cannot be verified within this time.
         public var settleTimeout: Double = 3
-        /// Hold low after the speaker reconnects. The speaker's output still settles for a few
-        /// seconds after waking (heard as stutter with a 1.5 s hold), so stay low through that.
         /// The KEF's USB volume moves in whole-dB steps, so an exact scalar can't always be
         /// hit; anything within this distance of the hold level counts (≈1–2 dB).
         public var holdTolerance: Float = 0.04
-        public var holdFor: Double = 5
-        /// Long, gentle S-curve back up to the user's volume.
-        public var rampFor: Double = 4.5
+        /// Stay muted after the speaker reconnects. Its output still pops and stutters for a
+        /// few seconds after waking; any audible level during that is heard as jitter.
+        public var holdFor: Double = 4
+        /// Then fade in from this far below the user's volume (inaudible) …
+        public var fadeFromBelow: Float = 50
+        /// … over this long, in even whole-dB steps.
+        public var rampFor: Double = 7
         /// Time between ramp writes. The KEF applies USB volume in whole-dB steps (≈0.006
         /// scalar) and falls behind if written every few ms, then catches up in bursts (heard as
-        /// jitter at the low end). One write per ~1 dB step keeps the steps evenly spaced.
-        public var rampInterval: Double = 0.12
+        /// jitter at the low end). Writing at most one step per tick keeps them evenly spaced.
+        public var rampInterval: Double = 0.1
         /// Skip ramp writes smaller than this; they'd round to the step already playing.
         public var rampMinStep: Float = 0.003
         public init(hold: Float) {
@@ -117,8 +132,8 @@ public final class VolumeGuard: @unchecked Sendable {
         }
     }
 
-    /// Full guard for a freshly re-arrived device: mute + hold until stable, restore the user's
-    /// current mute intent, then ease to their live target along an S-curve.
+    /// Full guard for a freshly re-arrived device: mute + hold until stable, stay silent while
+    /// the speaker settles, then fade in from inaudible to the user's live target.
     public func run(_ id: AudioObjectID, _ plan: Plan, intent: VolumeIntent,
                     log: @escaping @Sendable (String) -> Void,
                     done: @escaping @Sendable (_ completed: Bool) -> Void) {
@@ -166,19 +181,24 @@ public final class VolumeGuard: @unchecked Sendable {
             }
             log("settled at hold \(plan.hold) after \(String(format: "%.2f", Date().timeIntervalSince(start)))s")
 
-            // 2. Hold low (audible, quiet) while the speaker finishes waking. Keep re-asserting.
+            // 2. Stay muted at the hold level while the speaker finishes waking.
             let holdEnd = Date().addingTimeInterval(plan.holdFor)
             while alive(), Date() < holdEnd {
                 if audio.volume(id).map({ abs($0 - plan.hold) > plan.holdTolerance }) != false {
                     _ = audio.setVolume(id, plan.hold)
                 }
-                let desiredMute = intent.snapshot.muted
-                if audio.isMuted(id) != desiredMute { _ = audio.setMuted(id, desiredMute) }
+                if audio.isMuted(id) != true { _ = audio.setMuted(id, true) }
                 Thread.sleep(forTimeInterval: 0.05)
             }
             guard alive() else { return done(false) }
 
-            // 3. Ramp, timed against the clock so it takes `rampFor` regardless of write latency.
+            // 3. Fade in, evenly in dB, timed against the clock.
+            if !intent.snapshot.muted, Self.fadeIn(id, plan, intent: intent, audio: audio, alive: alive, log: log) {
+                return Self.finish(id, intent: intent, audio: audio, log: log, done: done)
+            }
+            guard alive() else { return done(false) }
+
+            // Fallback for devices without dB control: scalar ramp up from the hold level.
             log("ramp from \(plan.hold)")
             let rampStart = Date()
             var written = plan.hold
@@ -195,18 +215,55 @@ public final class VolumeGuard: @unchecked Sendable {
                 Thread.sleep(forTimeInterval: plan.rampInterval)
             }
             guard alive() else { return done(false) }
-            let final = intent.snapshot
-            guard audio.setVolume(id, final.target) else {
-                log("final volume write failed")
-                return done(false)
-            }
-            guard audio.setMuted(id, final.muted), audio.isMuted(id) == final.muted else {
-                log("final mute write failed; leaving output muted")
-                _ = audio.setMuted(id, true)
-                return done(false)
-            }
-            log("ramp done")
-            done(true)
+            Self.finish(id, intent: intent, audio: audio, log: log, done: done)
         }
+    }
+
+    /// Learns the target's dB while still muted, unmutes at `fadeFromBelow` under it and steps up
+    /// one whole dB at a time. Returns false (still muted) if the device has no dB control.
+    /// Stops early, at the user's level, if they move the volume meanwhile.
+    private static func fadeIn(_ id: AudioObjectID, _ plan: Plan, intent: VolumeIntent, audio: any VolumeDeviceIO,
+                               alive: () -> Bool, log: (String) -> Void) -> Bool {
+        let target = intent.snapshot.target
+        // Measuring means briefly setting the full target level: only while verifiably muted.
+        guard audio.isMuted(id) == true, let range = audio.decibelRange(id), audio.setVolume(id, target) else { return false }
+        Thread.sleep(forTimeInterval: 0.1)
+        guard let targetDB = audio.decibels(id) else { return false }
+        let floorDB = max(range.lowerBound, (targetDB - plan.fadeFromBelow).rounded(.down))
+        guard audio.setDecibels(id, floorDB) else { return false }
+        Thread.sleep(forTimeInterval: 0.1)
+        log("fade \(floorDB) → \(targetDB) dB")
+        _ = audio.setMuted(id, false)
+        let start = Date()
+        var written = floorDB
+        while alive() {
+            let desired = intent.snapshot
+            if abs(desired.target - target) > 0.001 { log("volume changed during fade"); break }
+            if audio.isMuted(id) != desired.muted { _ = audio.setMuted(id, desired.muted) }
+            let t = Float(min(Date().timeIntervalSince(start) / plan.rampFor, 1))
+            // Even in dB with soft ends: each step is the same loudness change.
+            let eased = 0.5 * t + 0.5 * t * t * (3 - 2 * t)
+            let db = (floorDB + (targetDB - floorDB) * eased).rounded()
+            if db != written, audio.setDecibels(id, db) { written = db }
+            if t >= 1 { break }
+            Thread.sleep(forTimeInterval: plan.rampInterval)
+        }
+        return true
+    }
+
+    private static func finish(_ id: AudioObjectID, intent: VolumeIntent, audio: any VolumeDeviceIO,
+                               log: (String) -> Void, done: (Bool) -> Void) {
+        let final = intent.snapshot
+        guard audio.setVolume(id, final.target) else {
+            log("final volume write failed")
+            return done(false)
+        }
+        guard audio.setMuted(id, final.muted), audio.isMuted(id) == final.muted else {
+            log("final mute write failed; leaving output muted")
+            _ = audio.setMuted(id, true)
+            return done(false)
+        }
+        log("ramp done")
+        done(true)
     }
 }

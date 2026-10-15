@@ -115,6 +115,29 @@ public enum AudioHardware {
         return ok
     }
 
+    /// Sets every output volume element to `db`, which the device rounds to its own steps.
+    @discardableResult
+    public static func setVolumeDecibels(_ id: AudioObjectID, _ db: Float) -> Bool {
+        let elements = volumeElements(id)
+        var ok = !elements.isEmpty
+        for el in elements {
+            var a = address(kAudioDevicePropertyVolumeDecibels, kAudioDevicePropertyScopeOutput, el)
+            var v = Float32(db)
+            ok = AudioObjectSetPropertyData(id, &a, 0, nil, 4, &v) == noErr && ok
+        }
+        return ok
+    }
+
+    public static func volumeDecibelRange(_ id: AudioObjectID) -> ClosedRange<Float>? {
+        guard let el = volumeElements(id).first else { return nil }
+        var a = address(kAudioDevicePropertyVolumeRangeDecibels, kAudioDevicePropertyScopeOutput, el)
+        var range = AudioValueRange()
+        var size = UInt32(MemoryLayout<AudioValueRange>.size)
+        guard AudioObjectGetPropertyData(id, &a, 0, nil, &size, &range) == noErr,
+              range.mMinimum < range.mMaximum else { return nil }
+        return Float(range.mMinimum)...Float(range.mMaximum)
+    }
+
     /// dB for one element (first available), for display and diagnostics.
     public static func volumeDecibels(_ id: AudioObjectID) -> Float? {
         guard let el = volumeElements(id).first else { return nil }

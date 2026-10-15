@@ -79,6 +79,30 @@ import Testing
         #expect(audio.currentMuted == true)
     }
 
+    /// Starts silent, unmutes only at the inaudible floor, then rises one dB at a time.
+    @Test func fadesInFromSilenceInWholeDecibels() async {
+        let audio = MockVolumeDevice(volume: 0.9, muted: false, decibelRange: -120...0)
+        let guarder = VolumeGuard(audio: audio)
+        var plan = VolumeGuard.Plan(hold: 0.4)
+        plan.settleFor = 0.02
+        plan.settleTimeout = 0.5
+        plan.holdFor = 0.02
+        plan.rampFor = 0.3
+        plan.rampInterval = 0.005
+
+        let completed = await run(guarder, audio: audio, plan: plan,
+                                  intent: VolumeIntent(target: 0.75, muted: false))
+
+        #expect(completed)
+        #expect(audio.currentMuted == false)
+        #expect(abs((audio.currentVolume ?? 0) - 0.75) < 0.001)
+        let fade = audio.decibelWrites
+        #expect(fade.first == -80)          // target −30 dB, 50 below
+        #expect(audio.decibelsWhenUnmuted == -80)
+        #expect(zip(fade, fade.dropFirst()).allSatisfy { $1 - $0 >= 0 && $1 - $0 <= 2 })
+        #expect(fade.last == -30)
+    }
+
     private func run(_ guarder: VolumeGuard, audio: MockVolumeDevice, plan: VolumeGuard.Plan,
                      intent: VolumeIntent) async -> Bool {
         await withCheckedContinuation { continuation in
@@ -95,13 +119,35 @@ private final class MockVolumeDevice: VolumeDeviceIO, @unchecked Sendable {
     private var storedMuted: Bool?
     private let acceptsWrites: Bool
     private let step: Float?
+    private let range: ClosedRange<Float>?
     private var storedMuteWrites: [Bool] = []
+    private var storedDecibelWrites: [Float] = []
+    private var storedDecibelsWhenUnmuted: Float?
 
-    init(volume: Float?, muted: Bool?, acceptsWrites: Bool = true, step: Float? = nil) {
+    init(volume: Float?, muted: Bool?, acceptsWrites: Bool = true, step: Float? = nil,
+         decibelRange: ClosedRange<Float>? = nil) {
         storedVolume = volume
         storedMuted = muted
         self.acceptsWrites = acceptsWrites
         self.step = step
+        range = decibelRange
+    }
+
+    var decibelWrites: [Float] { lock.withLock { storedDecibelWrites } }
+    var decibelsWhenUnmuted: Float? { lock.withLock { storedDecibelsWhenUnmuted } }
+
+    // A linear dB scale is enough to check the fade's shape.
+    func decibelRange(_ id: AudioObjectID) -> ClosedRange<Float>? { range }
+    func decibels(_ id: AudioObjectID) -> Float? {
+        lock.withLock { range.flatMap { r in storedVolume.map { r.lowerBound + (r.upperBound - r.lowerBound) * $0 } } }
+    }
+    func setDecibels(_ id: AudioObjectID, _ db: Float) -> Bool {
+        lock.withLock {
+            guard let range else { return false }
+            storedDecibelWrites.append(db)
+            storedVolume = (db - range.lowerBound) / (range.upperBound - range.lowerBound)
+            return true
+        }
     }
 
     var currentVolume: Float? { lock.withLock { storedVolume } }
@@ -121,7 +167,12 @@ private final class MockVolumeDevice: VolumeDeviceIO, @unchecked Sendable {
     func setMuted(_ id: AudioObjectID, _ muted: Bool) -> Bool {
         lock.withLock {
             storedMuteWrites.append(muted)
-            if acceptsWrites { storedMuted = muted }
+            if acceptsWrites {
+                if storedMuted == true, !muted, storedDecibelsWhenUnmuted == nil, let range, let v = storedVolume {
+                    storedDecibelsWhenUnmuted = range.lowerBound + (range.upperBound - range.lowerBound) * v
+                }
+                storedMuted = muted
+            }
             return acceptsWrites
         }
     }
