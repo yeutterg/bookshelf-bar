@@ -8,8 +8,9 @@ struct SpeakerArtwork: View {
     let state: SpeakerState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     // SwiftUI drives repeating animations from the CPU every frame, and the menu bar panel can
-    // stay alive while hidden. Only pulse while the panel is in front.
-    @Environment(\.appearsActive) private var appearsActive
+    // stay alive while hidden. Only pulse while it's on screen. (Not `appearsActive`: a menu
+    // bar-only app's panel never counts as active, so that kept the pulse from ever running.)
+    @State private var onScreen = true
 
     var body: some View {
         let matched = Self.images[finish.artwork]
@@ -50,12 +51,13 @@ struct SpeakerArtwork: View {
             .frame(width: width, height: height)
             .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
         }
+        .background(WindowVisibility(visible: $onScreen))
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: dimmed)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: state)
         .accessibilityHidden(true)
     }
 
-    private var still: Bool { reduceMotion || !appearsActive }
+    private var still: Bool { reduceMotion || !onScreen }
 
     private var dimmed: Bool { state == .offline || state == .reconnecting || state == .standby }
 
@@ -119,4 +121,35 @@ private struct SpeakerPulse: View {
     private var color: Color { state == .waking ? .orange : .white }
     private var duration: Double { state == .waking ? 1.7 : 2.15 }
     private var scale: CGFloat { state == .waking ? 1.85 : 1.58 }
+}
+
+/// Reports whether the hosting window is actually visible (not hidden or fully covered).
+private struct WindowVisibility: NSViewRepresentable {
+    @Binding var visible: Bool
+
+    func makeNSView(context: Context) -> NSView {
+        let view = TrackingView()
+        view.onChange = { visible in DispatchQueue.main.async { self.visible = visible } }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    final class TrackingView: NSView {
+        var onChange: ((Bool) -> Void)?
+
+        // Selector-based observers are removed automatically when the view is deallocated.
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+            guard let window else { onChange?(false); return }
+            NotificationCenter.default.addObserver(self, selector: #selector(occlusionChanged),
+                                                   name: NSWindow.didChangeOcclusionStateNotification, object: window)
+            occlusionChanged()
+        }
+
+        @objc private func occlusionChanged() {
+            onChange?(window?.occlusionState.contains(.visible) ?? false)
+        }
+    }
 }
