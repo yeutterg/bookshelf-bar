@@ -79,7 +79,7 @@ import Testing
         #expect(audio.currentMuted == true)
     }
 
-    /// Starts silent, unmutes only at the inaudible floor, then rises one dB at a time.
+    /// Starts silent, unmutes only at the inaudible floor, then rises in bounded whole-dB steps.
     @Test func fadesInFromSilenceInWholeDecibels() async {
         let audio = MockVolumeDevice(volume: 0.9, muted: false, decibelRange: -120...0)
         let guarder = VolumeGuard(audio: audio)
@@ -100,8 +100,29 @@ import Testing
         let fade = audio.decibelWrites
         #expect(fade.first == -80)          // target −30 dB, 50 below
         #expect(audio.decibelsWhenUnmuted == -80)
-        #expect(zip(fade, fade.dropFirst()).allSatisfy { $1 - $0 == 1 })
+        #expect(zip(fade, fade.dropFirst()).allSatisfy { $1 - $0 >= 1 && $1 - $0 <= 8 && $1 == $1.rounded() })
         #expect(fade.last == -30)
+    }
+
+    /// The real KEF reports a write late. Measuring the target too early read the parked level
+    /// (−103 dB), so the fade stayed inaudible and then jumped to full volume.
+    @Test func waitsForTheTargetBeforeMeasuringItsLevel() async {
+        let audio = MockVolumeDevice(volume: 0.9, muted: false, decibelRange: -120...0, staleReads: 3)
+        let guarder = VolumeGuard(audio: audio)
+        var plan = VolumeGuard.Plan(hold: 0.1)
+        plan.settleFor = 0.02
+        plan.settleTimeout = 1
+        plan.holdFor = 0
+        plan.rampFor = 0.2
+        plan.rampInterval = 0.005
+        plan.fadeFromBelow = 50
+
+        let completed = await run(guarder, audio: audio, plan: plan,
+                                  intent: VolumeIntent(target: 0.75, muted: false))
+
+        #expect(completed)
+        #expect(audio.decibelWrites.first == -80)
+        #expect(audio.decibelWrites.last == -30)
     }
 
     private func run(_ guarder: VolumeGuard, audio: MockVolumeDevice, plan: VolumeGuard.Plan,
@@ -121,17 +142,21 @@ private final class MockVolumeDevice: VolumeDeviceIO, @unchecked Sendable {
     private let acceptsWrites: Bool
     private let step: Float?
     private let range: ClosedRange<Float>?
+    private let staleReads: Int
+    private var staleVolume: Float?
+    private var staleLeft = 0
     private var storedMuteWrites: [Bool] = []
     private var storedDecibelWrites: [Float] = []
     private var storedDecibelsWhenUnmuted: Float?
 
     init(volume: Float?, muted: Bool?, acceptsWrites: Bool = true, step: Float? = nil,
-         decibelRange: ClosedRange<Float>? = nil) {
+         decibelRange: ClosedRange<Float>? = nil, staleReads: Int = 0) {
         storedVolume = volume
         storedMuted = muted
         self.acceptsWrites = acceptsWrites
         self.step = step
         range = decibelRange
+        self.staleReads = staleReads
     }
 
     var decibelWrites: [Float] { lock.withLock { storedDecibelWrites } }
@@ -140,7 +165,10 @@ private final class MockVolumeDevice: VolumeDeviceIO, @unchecked Sendable {
     // A linear dB scale is enough to check the fade's shape.
     func decibelRange(_ id: AudioObjectID) -> ClosedRange<Float>? { range }
     func decibels(_ id: AudioObjectID) -> Float? {
-        lock.withLock { range.flatMap { r in storedVolume.map { r.lowerBound + (r.upperBound - r.lowerBound) * $0 } } }
+        lock.withLock {
+            let v = staleLeft > 0 ? staleVolume : storedVolume
+            return range.flatMap { r in v.map { r.lowerBound + (r.upperBound - r.lowerBound) * $0 } }
+        }
     }
     func setDecibels(_ id: AudioObjectID, _ db: Float) -> Bool {
         lock.withLock {
@@ -155,12 +183,21 @@ private final class MockVolumeDevice: VolumeDeviceIO, @unchecked Sendable {
     var currentMuted: Bool? { lock.withLock { storedMuted } }
     var muteWrites: [Bool] { lock.withLock { storedMuteWrites } }
 
-    func volume(_ id: AudioObjectID) -> Float? { currentVolume }
+    /// After a write, the first `staleReads` reads still return the previous level.
+    func volume(_ id: AudioObjectID) -> Float? {
+        lock.withLock {
+            if staleLeft > 0 { staleLeft -= 1; return staleVolume }
+            return storedVolume
+        }
+    }
     func isMuted(_ id: AudioObjectID) -> Bool? { currentMuted }
 
     func setVolume(_ id: AudioObjectID, _ scalar: Float) -> Bool {
         lock.withLock {
-            if acceptsWrites { storedVolume = step.map { (scalar / $0).rounded() * $0 } ?? scalar }
+            if acceptsWrites {
+                if staleReads > 0 { staleVolume = storedVolume; staleLeft = staleReads }
+                storedVolume = step.map { (scalar / $0).rounded() * $0 } ?? scalar
+            }
             return acceptsWrites
         }
     }

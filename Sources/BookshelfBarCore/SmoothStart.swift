@@ -172,7 +172,14 @@ public final class SmoothStart {
                 movedOutputForStandby = false
                 restoreDefault = true
             }
-            if enabled {
+            if enabled, armedLow, !speaker.isOn, phase == .idle {
+                // The USB interface also drops and re-appears as the speaker *enters* standby.
+                // That's not a wake: stay parked, and only fade in if it turns out to be on.
+                slog.info("re-arrived while off; staying parked")
+                volumeGuard.setMuted(id, true)
+                volumeGuard.setLevel(id, holdLevel)
+                watchForLateWake(id)
+            } else if enabled {
                 guardArrival(id)
             } else {
                 restoreDefaultOutputIfNeeded()
@@ -234,6 +241,23 @@ public final class SmoothStart {
             phase = .waking
             startWakeWatchdog()
             Task { await speaker.wakeIfNeeded(notify: false) }
+        }
+    }
+
+    /// A re-arrival while off was taken for standby entry. If the speaker reports on shortly
+    /// after (woken by the remote, say), run the normal guard so it doesn't stay parked.
+    private func watchForLateWake(_ id: AudioObjectID) {
+        guardTask?.cancel()
+        guardTask = Task { [weak self] in
+            for _ in 0..<15 {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, let self, self.phase == .idle, self.usb.device == id else { return }
+                if self.speaker.isOn {
+                    slog.info("on after re-arrival; fading in")
+                    self.guardArrival(id)
+                    return
+                }
+            }
         }
     }
 

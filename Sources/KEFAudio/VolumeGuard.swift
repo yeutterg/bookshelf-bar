@@ -56,14 +56,17 @@ public final class VolumeGuard: @unchecked Sendable {
         public var holdTolerance: Float = 0.04
         /// Extra time to stay muted once the hold has settled, before fading in.
         public var holdFor: Double = 0
-        /// Fade in from this far below the user's volume (just above silence) …
-        public var fadeFromBelow: Float = 35
+        /// Fade in from this far below the user's volume (effectively silent) …
+        public var fadeFromBelow: Float = 60
         /// … over this long, in even whole-dB steps.
         public var rampFor: Double = 3
-        /// Time between ramp writes. The KEF applies USB volume in whole-dB steps (≈0.006
-        /// scalar) and falls behind if written every few ms, then catches up in bursts (heard as
-        /// jitter at the low end). One whole-dB step per write keeps them evenly spaced.
-        public var rampInterval: Double = 0.07
+        /// Time between ramp writes. Each write to the KEF already blocks ~0.1–0.2 s, so this
+        /// only keeps writes from queuing up (30 ms async writes made it fall behind and apply
+        /// steps in bursts, heard as jitter).
+        public var rampInterval: Double = 0.03
+        /// Largest fade step per write, a bound for a stalled thread. The ease-out curve puts
+        /// the big steps at the inaudible bottom and slows to ~1 dB per write at the top.
+        public var fadeMaxStep: Float = 8
         /// Skip ramp writes smaller than this; they'd round to the step already playing.
         public var rampMinStep: Float = 0.003
         public init(hold: Float) {
@@ -197,7 +200,14 @@ public final class VolumeGuard: @unchecked Sendable {
             }
             guard alive() else { return done(false) }
 
-            // Fallback for devices without dB control: scalar ramp up from the hold level.
+            // Fallback for devices without dB control: scalar ramp up from the hold level. The
+            // level may have been moved while muted; confirm it's back at hold before unmuting.
+            _ = audio.setVolume(id, plan.hold)
+            let holdDeadline = Date().addingTimeInterval(2)
+            while alive(), Date() < holdDeadline, audio.volume(id).map({ abs($0 - plan.hold) > plan.holdTolerance }) ?? false {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            guard alive() else { return done(false) }
             log("ramp from \(plan.hold)")
             let rampStart = Date()
             var written = plan.hold
@@ -218,33 +228,47 @@ public final class VolumeGuard: @unchecked Sendable {
         }
     }
 
-    /// Learns the target's dB while still muted, unmutes at `fadeFromBelow` under it and steps up
-    /// one whole dB at a time. Returns false (still muted) if the device has no dB control.
+    /// Learns the target's dB while still muted, unmutes at `fadeFromBelow` under it and rises in
+    /// whole-dB steps on the clock. Returns false (still muted) if the device has no dB control.
     /// Stops early, at the user's level, if they move the volume meanwhile.
     private static func fadeIn(_ id: AudioObjectID, _ plan: Plan, intent: VolumeIntent, audio: any VolumeDeviceIO,
                                alive: () -> Bool, log: (String) -> Void) -> Bool {
         let target = intent.snapshot.target
         // Measuring means briefly setting the full target level: only while verifiably muted.
         guard audio.isMuted(id) == true, let range = audio.decibelRange(id), audio.setVolume(id, target) else { return false }
-        Thread.sleep(forTimeInterval: 0.1)
-        guard let targetDB = audio.decibels(id) else { return false }
+        // The KEF applies writes late: reading straight back can still return the parked level
+        // (measured: −103 dB instead of −28, so the fade ended in a jump to full volume). Wait
+        // until it reports the target twice in a row before trusting its dB.
+        var targetDB: Float?
+        var matches = 0
+        let deadline = Date().addingTimeInterval(2)
+        while alive(), Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+            guard let v = audio.volume(id), abs(v - target) <= 0.01 else { matches = 0; continue }
+            matches += 1
+            if matches >= 2 { targetDB = audio.decibels(id); break }
+        }
+        guard let targetDB, audio.isMuted(id) == true else {
+            log("couldn't confirm the target level; ramping in scalar instead")
+            return false
+        }
         let floorDB = max(range.lowerBound, (targetDB - plan.fadeFromBelow).rounded(.down))
         guard audio.setDecibels(id, floorDB) else { return false }
         Thread.sleep(forTimeInterval: 0.1)
         log("fade \(floorDB) → \(targetDB) dB")
         _ = audio.setMuted(id, false)
+        var muted = false
         let start = Date()
         var written = floorDB
         while alive() {
             let desired = intent.snapshot
             if abs(desired.target - target) > 0.001 { log("volume changed during fade"); break }
-            if audio.isMuted(id) != desired.muted { _ = audio.setMuted(id, desired.muted) }
+            if desired.muted != muted, audio.setMuted(id, desired.muted) { muted = desired.muted }
             let t = Float(min(Date().timeIntervalSince(start) / plan.rampFor, 1))
-            // Even in dB with soft ends: each step is the same loudness change.
-            let eased = 0.5 * t + 0.5 * t * t * (3 - 2 * t)
-            // Never more than one step per write: if this thread stalls, the fade runs a
-            // little long instead of jumping.
-            let db = min((floorDB + (targetDB - floorDB) * eased).rounded(), written + 1)
+            // Ease-out in dB: fast through the inaudible bottom, gentle into the user's level.
+            // Writes take ~0.15 s each, so any catching up happens down low, not at the top.
+            let eased = 1 - (1 - t) * (1 - t)
+            let db = min((floorDB + (targetDB - floorDB) * eased).rounded(), written + plan.fadeMaxStep)
             if db != written, audio.setDecibels(id, db) { written = db }
             if t >= 1, written >= targetDB || Date().timeIntervalSince(start) > plan.rampFor * 2 + 1 { break }
             Thread.sleep(forTimeInterval: plan.rampInterval)
