@@ -64,6 +64,10 @@ Only do this for apps you trust. The source is all here, and you can [build it y
    - Open **Sound** for the volume curve, desk/wall mode, bass extension, treble, balance and the speakers' power settings.
    - If macOS asks whether BookshelfBar may record system audio, that's only so the speaker animation plays while sound is actually coming out. Nothing is recorded. Saying no just keeps the animation still.
 
+## Suggesting improvements
+
+Found a bug or have an idea? Please [open an issue](https://github.com/yeutterg/bookshelf-bar/issues). Pull requests are welcome too, but for feature requests and bug reports we prefer an issue first, so we can talk it through.
+
 ## Build it yourself
 
 ```sh
