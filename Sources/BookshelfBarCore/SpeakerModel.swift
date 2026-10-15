@@ -458,6 +458,10 @@ public final class SpeakerModel {
     /// Set by Smooth Start: some app on this Mac has an audio stream open to the KEF.
     public var usbStreamActive = false
 
+    /// Set by Smooth Start: moves Mac output off the KEF so apps close their streams to it.
+    /// Returns false if a stream is still open.
+    public var releaseUSBStream: (() async -> Bool)?
+
     /// Set by Smooth Start: names of the apps currently holding an audio stream open to the KEF.
     public var streamHolders: () -> [String] = { [] }
 
@@ -465,15 +469,27 @@ public final class SpeakerModel {
     /// But with Wake On = USB Audio, the firmware wakes straight back up ~3 s later if an app
     /// holds an audio stream open to it (Spotify even while paused, the iOS Simulator…).
     ///
-    /// So when a stream is held, standby is made to stick: switch the wake source off, enter
-    /// standby, and restore it a few seconds later (restoring doesn't wake it). Measured side
-    /// effect: the speaker also powers down its USB interface until its next wake, so it leaves
-    /// the Sound menu and Mac audio can't wake it, only BookshelfBar or the remote. If no stream
-    /// was seen but the speaker re-wakes anyway, the same is retried once.
+    /// So when a stream is held, Mac output first moves to another device, which makes apps
+    /// close their streams; then the speaker sleeps normally and stays in the Sound menu.
+    ///
+    /// Only if a stream stays open (or the speaker re-wakes anyway) is standby made to stick the
+    /// hard way: switch the wake source off, enter standby, and restore it a few seconds later
+    /// (restoring doesn't wake it). Measured side effect: the speaker also powers down its USB
+    /// interface until its next wake, so it leaves the Sound menu until woken another way.
     ///
     /// `force: true` (Keep Awake at screen-off) skips the re-wake check.
     public func turnOff(force: Bool = false) {
-        turnOff(holdWakeOff: usbStreamActive, checkRewake: !force)
+        guard !isUpdatingFirmware else { return }
+        guard usbStreamActive, let releaseUSBStream else {
+            return turnOff(holdWakeOff: false, checkRewake: !force)
+        }
+        status = .standby
+        source = .standby
+        Task {
+            let released = await releaseUSBStream()
+            if !released { log.info("a stream to the KEF stayed open; holding wake off for standby") }
+            turnOff(holdWakeOff: !released, checkRewake: !force)
+        }
     }
 
     private func turnOff(holdWakeOff: Bool, checkRewake: Bool) {

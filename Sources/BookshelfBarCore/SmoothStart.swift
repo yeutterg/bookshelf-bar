@@ -49,6 +49,10 @@ public final class SmoothStart {
     private let defaults = UserDefaults.standard
     private var kefWasDefault = false
     private var restoreDefault = false
+    /// BookshelfBar moved Mac output off the KEF to put it in standby; put it back when the
+    /// speaker is turned on again, unless the user picks an output themselves meanwhile.
+    private var movedOutputForStandby = false
+    private var ignoreDefaultChangeUntil = Date.distantPast
     private var ignoreVolumeUntil = Date.distantPast
     private var guardTask: Task<Void, Never>?
     /// Invalidates callbacks from a cancelled guard so an old USB device cannot finish a
@@ -74,6 +78,7 @@ public final class SmoothStart {
         observeSystem()
         speaker.willChangePower = { [weak self] on in self?.prepareForPower(on: on) }
         speaker.streamHolders = { [weak self] in self?.streamHolderNames() ?? [] }
+        speaker.releaseUSBStream = { [weak self] in await self?.moveOutputOffKEF() ?? false }
     }
 
     // MARK: Mac-side volume (what the macOS Sound control shows)
@@ -161,9 +166,14 @@ public final class SmoothStart {
 
         case .arrived(let id):
             usbPresent = true
+            if movedOutputForStandby, speaker.isOn {
+                movedOutputForStandby = false
+                restoreDefault = true
+            }
             if enabled {
                 guardArrival(id)
             } else {
+                restoreDefaultOutputIfNeeded()
                 if armedLow { volumeGuard.setState(id, target: target, muted: liveMuted) }
                 finish()
             }
@@ -171,6 +181,7 @@ public final class SmoothStart {
         case .defaultOutputChanged(let isKEF):
             // Ignore the fallback macOS does while the KEF is gone; we restore it on arrival.
             if usb.device != nil { kefWasDefault = isKEF }
+            if isKEF || Date() > ignoreDefaultChangeUntil { movedOutputForStandby = false }
             if isKEF, enabled, !speaker.isOn { prepareForPower(on: true) }
 
         case .runningChanged(let running):
@@ -240,9 +251,32 @@ public final class SmoothStart {
     /// macOS re-applies its saved level a moment later), put back the default output, then ramp.
     private func guardArrival(_ id: AudioObjectID) {
         guardTask?.cancel()
+        restoreDefaultOutputIfNeeded()
+        runGuard(id)
+    }
+
+    private func restoreDefaultOutputIfNeeded() {
         if restoreDefault, !usb.isDefaultOutput { usb.makeDefaultOutput() }
         restoreDefault = false
-        runGuard(id)
+    }
+
+    /// Standby with Wake On = USB Audio re-wakes ~3 s later while any app streams to the KEF
+    /// (Spotify does even when paused). Moving the Mac's output elsewhere makes apps close
+    /// those streams, so the speaker can sleep normally and stays in the Sound menu; choosing
+    /// it there wakes it. Returns false if a stream is still open afterwards.
+    func moveOutputOffKEF() async -> Bool {
+        guard let kef = usb.device, usbRunning else { return true }
+        if usb.isDefaultOutput {
+            let preferred = usb.lastOtherOutputUID
+            let other = await Task.detached { AudioHardware.otherOutputs(excluding: kef, preferredUID: preferred).first }.value
+            guard let other else { return false }
+            ignoreDefaultChangeUntil = Date().addingTimeInterval(2)
+            guard await Task.detached(operation: { AudioHardware.setDefaultOutput(other) }).value else { return false }
+            movedOutputForStandby = true
+            slog.info("moved output off the KEF for standby")
+        }
+        for _ in 0..<20 where usbRunning { try? await Task.sleep(for: .milliseconds(100)) }
+        return !usbRunning
     }
 
     private func runGuard(_ id: AudioObjectID) {

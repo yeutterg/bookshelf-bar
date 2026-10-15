@@ -58,6 +58,22 @@ public enum AudioHardware {
         setUInt32(system, address(kAudioHardwarePropertyDefaultOutputDevice), id)
     }
 
+    /// Visible output devices other than `excluded`, with `preferredUID` first, then the
+    /// built-in output.
+    public static func otherOutputs(excluding excluded: AudioObjectID, preferredUID: String?) -> [AudioObjectID] {
+        let outputs = devices().filter { id in
+            guard id != excluded, uint32(id, address(kAudioDevicePropertyIsHidden)) != 1 else { return false }
+            var a = address(kAudioDevicePropertyStreams, kAudioDevicePropertyScopeOutput)
+            var size: UInt32 = 0
+            return AudioObjectGetPropertyDataSize(id, &a, 0, nil, &size) == noErr && size > 0
+        }
+        func rank(_ id: AudioObjectID) -> Int {
+            if let preferredUID, uid(id) == preferredUID { return 0 }
+            return uint32(id, address(kAudioDevicePropertyTransportType)) == kAudioDeviceTransportTypeBuiltIn ? 1 : 2
+        }
+        return outputs.sorted { rank($0) < rank($1) }
+    }
+
     // MARK: Device state
 
     public static func isRunningSomewhere(_ id: AudioObjectID) -> Bool {

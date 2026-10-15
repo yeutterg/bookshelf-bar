@@ -26,6 +26,9 @@ public final class KEFUSBMonitor {
     public private(set) var volume: Float?
     public private(set) var muted = false
     public private(set) var name: String?
+    /// The most recent default output that wasn't the KEF, so BookshelfBar can move Mac audio
+    /// back there when it puts the speaker in standby.
+    public private(set) var lastOtherOutputUID: String?
     public var onEvent: ((Event) -> Void)?
 
     private let callbackQueue = DispatchQueue(label: "BookshelfBar.CoreAudioCallbacks", qos: .userInitiated)
@@ -51,9 +54,11 @@ public final class KEFUSBMonitor {
         addSystemListener(kAudioHardwarePropertyDefaultOutputDevice) { [weak self] in
             guard let self else { return }
             let current = AudioHardware.defaultOutput()
+            let currentUID = current.flatMap(AudioHardware.uid)
             Task { @MainActor in
                 let isKEF = current == self.device
                 self.isDefaultOutput = isKEF
+                if !isKEF, let currentUID, !currentUID.hasPrefix(Self.uidPrefix) { self.lastOtherOutputUID = currentUID }
                 self.onEvent?(.defaultOutputChanged(isKEF: isKEF))
             }
         }
