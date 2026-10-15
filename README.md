@@ -3,10 +3,8 @@
     <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
     <img src="docs/logo-light.svg" alt="" height="30">
   </picture>
-  BookshelfBar
+  BookshelfBar: macOS menu bar application for KEF speakers
 </h1>
-
-**macOS menu bar application for KEF speakers**
 
 A native macOS menu bar app for KEF wireless speakers (LSX II LT, LSX II and the rest of the W2 platform), with a fix for common problems, including:
 
@@ -14,7 +12,7 @@ A native macOS menu bar app for KEF wireless speakers (LSX II LT, LSX II and the
 - **Standby that won't stick:** an app holding an audio stream open (Spotify, even paused, a browser tab, the iOS Simulator) wakes the speakers straight back up. BookshelfBar lets them actually sleep, and they stay in the macOS Sound menu.
 - **Output switching away:** when the speaker drops off USB while waking, macOS can move audio to another device and leave it there. BookshelfBar puts it back.
 
-<p align="center"><img src="docs/screenshot.png" alt="BookshelfBar's menu: power, volume, speakers, inputs, Smooth Start and Keep Awake" width="320"></p>
+<img src="docs/screenshot.png" alt="BookshelfBar open from the macOS menu bar: power, volume, the speakers, inputs, Smooth Start and Keep Awake">
 
 - **Control:** power, input, volume and mute, plus desk/wall mode, bass extension, treble, balance, auto-standby, wake source and maximum volume.
 - **Smooth Start:** wakes the speakers before audio plays, guards the moment the speaker reconnects over USB, and fades in from silence. The volume can be set while they're asleep; it applies when they fade back on.
