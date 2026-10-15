@@ -14,7 +14,7 @@ A native macOS menu bar app for KEF wireless speakers (LSX II LT, LSX II and the
 
 <img src="docs/screenshot.png" alt="BookshelfBar open from the macOS menu bar: power, volume, the speakers, inputs, Smooth Start and Keep Awake">
 
-Requires macOS 26 or later. Not affiliated with KEF.
+Not affiliated with KEF.
 
 ## Features
 
@@ -26,6 +26,8 @@ Requires macOS 26 or later. Not affiliated with KEF.
 - **Native and light:** SwiftUI with system controls and SF Symbols, no polling, and no network connection at all while the speakers are in standby and the menu is closed.
 
 ## Install
+
+Requires macOS 26 or later.
 
 **Homebrew:**
 
