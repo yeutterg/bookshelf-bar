@@ -3,7 +3,7 @@
     <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
     <img src="docs/logo-light.svg" alt="" height="30">
   </picture>
-  BookshelfBar: macOS menu bar application for KEF speakers
+  BookshelfBar: macOS menu bar app for KEF speakers
 </h1>
 
 A native macOS menu bar app for KEF wireless speakers (LSX II LT, LSX II and the rest of the W2 platform), with a fix for common problems, including:

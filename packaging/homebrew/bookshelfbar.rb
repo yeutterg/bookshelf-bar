@@ -7,7 +7,7 @@ cask "bookshelfbar" do
   desc "Menu bar controls for KEF LSX II and LSX II LT speakers"
   homepage "https://github.com/yeutterg/bookshelf-bar"
 
-  depends_on macos: ">= :tahoe"
+  depends_on macos: :tahoe
 
   app "BookshelfBar.app"
 
